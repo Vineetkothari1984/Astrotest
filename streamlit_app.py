@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 from datetime import timedelta
 import base64
+from database import read_table
 
 import hashlib
 
@@ -120,7 +121,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # Load stock data
 @st.cache_data
 def load_stock_data():
-    df = pd.read_excel("doc.xlsx")
+    df = read_table("stocks")
     df['NSE LISTING DATE'] = pd.to_datetime(df['NSE LISTING DATE'], errors='coerce')
     df['BSE LISTING DATE'] = pd.to_datetime(df['BSE LISTING DATE'], errors='coerce')
     df['DATE OF INCORPORATION'] = pd.to_datetime(df['DATE OF INCORPORATION'], errors='coerce')
@@ -128,16 +129,28 @@ def load_stock_data():
 
 @st.cache_data(ttl=3600)
 def load_excel_data(file):
-    df = pd.read_excel(file, index_col=0)
-    df.index = pd.to_datetime(df.index)
+    table_map = {
+        "nifty.xlsx": "nifty",
+        "banknifty.xlsx": "banknifty",
+        "moon.xlsx": "moon",
+        "mercury.xlsx": "mercury",
+        "mercurycom.xlsx": "mercurycom",
+        "panchak.xlsx": "panchak",
+    }
+    table = table_map.get(file)
+    if table is None:
+        raise ValueError(f"Unknown file: {file}")
+    df = read_table(table)
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df.set_index("Date", inplace=True)
     return df
 
 # Load numerology data
 @st.cache_data
 def load_numerology_data():
-    df = pd.read_excel("numerology.xlsx")
+    df = read_table("numerology")
     df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
-    
     return df
 
 def calculate_destiny_number(date_obj):
@@ -1085,12 +1098,6 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
         file = "banknifty.xlsx"
         symbol = "^NSEBANK"
 
-    @st.cache_data(ttl=3600)
-    def load_excel_data(file):
-        df = pd.read_excel(file, index_col=0)
-        df.index = pd.to_datetime(df.index)
-        return df
-
     excel_data = load_excel_data(file)
     last_excel_date = excel_data.index[-1].date()
 
@@ -1325,13 +1332,7 @@ elif filter_mode == "Equinox":
 
     file = "nifty.xlsx" if index_choice == "Nifty 50" else "banknifty.xlsx"
 
-    @st.cache_data(ttl=3600)
-    def load_excel_data_for_report(file):
-        df = pd.read_excel(file, index_col=0)
-        df.index = pd.to_datetime(df.index)
-        return df
-
-    ohlc_data = load_excel_data_for_report(file)
+    ohlc_data = load_excel_data(file)
 
     # Recalculate Volatility % and Close %
     ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
@@ -1453,12 +1454,12 @@ elif filter_mode == "Moon":
     st.header("🌑 Moon Phase Analysis")
 
     # Load moon data
-    moon_df = pd.read_excel("moon.xlsx")
+    moon_df = read_table("moon")
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
     moon_df = moon_df.sort_values('Date')
 
-    # Load stock symbols from doc.xlsx
-    doc_df = pd.read_excel("doc.xlsx")
+    # Load stock symbols
+    doc_df = read_table("stocks")
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
 
     # Load numerology
@@ -1590,11 +1591,11 @@ elif filter_mode == "Mercury":
     st.header("🪐Mercury Phase Analysis")
 
     # Load mercury data
-    mercury_df = pd.read_excel("mercury.xlsx")
+    mercury_df = read_table("mercury")
     mercury_df['Date'] = pd.to_datetime(mercury_df['Date'], dayfirst=True)
     mercury_df = mercury_df.sort_values('Date')
     # Load moon phase data
-    moon_df = pd.read_excel("moon.xlsx")
+    moon_df = read_table("moon")
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
 
     # Get dates for Amavasya and Poornima
@@ -1602,8 +1603,8 @@ elif filter_mode == "Mercury":
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == "poornima"]['Date'].dt.date)
 
 
-    # Load stock symbols from doc.xlsx
-    doc_df = pd.read_excel("doc.xlsx")
+    # Load stock symbols
+    doc_df = read_table("stocks")
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
 
     # Load numerology
@@ -1853,13 +1854,13 @@ elif filter_mode == "Panchak":
     st.title("📅 Panchak Dates Analysis")
 
     # Load Panchak data
-    panchak_df = pd.read_excel("panchak.xlsx")
+    panchak_df = read_table("panchak")
     panchak_df['Start Date'] = pd.to_datetime(panchak_df['Start Date'], errors='coerce', dayfirst=True)
     panchak_df['End Date'] = pd.to_datetime(panchak_df['End Date'], errors='coerce', dayfirst=True)
     panchak_df = panchak_df.dropna(subset=['Start Date', 'End Date']).sort_values('Start Date').reset_index(drop=True)
 
     # Load moon data
-    moon_df = pd.read_excel("moon.xlsx")
+    moon_df = read_table("moon")
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], errors='coerce')
     amavasya_dates = set(moon_df[moon_df['A/P'].str.lower() == "amavasya"]['Date'].dt.date)
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == "poornima"]['Date'].dt.date)
@@ -1901,7 +1902,7 @@ elif filter_mode == "Panchak":
         file = "nifty.xlsx" if symbol == "Nifty" else "banknifty.xlsx"
         ticker = "^NSEI" if symbol == "Nifty" else "^NSEBANK"
 
-        df = pd.read_excel(file)
+        df = load_excel_data(file).reset_index().rename(columns={'index': 'Date'})
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date'])
         df.set_index('Date', inplace=True)
@@ -2023,12 +2024,12 @@ elif filter_mode == "Mercury Combust":
     st.header("🔥 Mercury Combust Period Analysis")
 
     # Load combustion data
-    combust_df = pd.read_excel("mercurycom.xlsx")
+    combust_df = read_table("mercurycom")
     combust_df['Start Date'] = pd.to_datetime(combust_df['Start Date'], dayfirst=True)
     combust_df['End Date'] = pd.to_datetime(combust_df['End Date'], dayfirst=True)
 
     # Load moon data
-    moon_df = pd.read_excel("moon.xlsx")
+    moon_df = read_table("moon")
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
     amavasya_dates = set(moon_df[moon_df['A/P'].str.lower() == 'amavasya']['Date'].dt.date)
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == 'poornima']['Date'].dt.date)
@@ -2070,7 +2071,7 @@ elif filter_mode == "Mercury Combust":
 
     # SYMBOL SECTION
     st.subheader("📈 Symbol OHLC + Numerology")
-    doc_df = pd.read_excel("doc.xlsx")
+    doc_df = read_table("stocks")
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
     selected_symbol = st.selectbox("Select Stock Symbol:", available_symbols)
 
