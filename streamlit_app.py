@@ -8,18 +8,37 @@ from datetime import timedelta
 import base64
 from database import read_table
 
+import os
+import json
 import hashlib
 
 # Utility function to hash passwords
-def hash_password(password):
+def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Format: username: hashed_password
-USER_CREDENTIALS = {
-    "admin": hash_password("admin123"),
-    "transleads": hash_password("leads27"),
-    "vin": hash_password("vin69"),
-}
+
+def load_credentials() -> dict:
+    """Load credentials from environment or a JSON file."""
+    creds_env = os.environ.get("NUMERONIQ_CREDENTIALS")
+    if creds_env:
+        try:
+            return json.loads(creds_env)
+        except json.JSONDecodeError:
+            st.error("Invalid format in NUMERONIQ_CREDENTIALS")
+            return {}
+
+    try:
+        with open("credentials.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        st.error("Invalid JSON in credentials file")
+        return {}
+
+
+# Format: username -> hashed_password
+USER_CREDENTIALS = load_credentials()
 
 # Check login status
 if "authenticated" not in st.session_state:
@@ -27,11 +46,17 @@ if "authenticated" not in st.session_state:
 
 def login():
     st.title("🔐 Secure Access")
+
+    if not USER_CREDENTIALS:
+        st.error("No credentials configured. Set the NUMERONIQ_CREDENTIALS env var or credentials.json")
+        return
+
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == hash_password(password):
+        hashed = hash_password(password)
+        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == hashed:
             st.session_state.authenticated = True
             st.session_state.username = username
             st.rerun()

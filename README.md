@@ -17,3 +17,16 @@ A simple Streamlit app template for you to modify!
    ```
    $ streamlit run streamlit_app.py
    ```
+
+### Configuring Credentials
+
+The app expects user credentials as a mapping of usernames to **SHA-256 hashed**
+passwords. Provide them either via the environment variable `NUMERONIQ_CREDENTIALS`
+or in a `credentials.json` file in the project root (ignored by Git). Example:
+
+```json
+{
+  "admin": "<hashed-password>",
+  "user": "<hashed-password>"
+}
+```
