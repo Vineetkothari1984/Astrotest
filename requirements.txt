@@ -4,4 +4,4 @@ yfinance
 datetime
 plotly
 sqlalchemy
-psycopg2
+
