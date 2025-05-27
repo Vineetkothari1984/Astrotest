@@ -3,5 +3,4 @@ openpyxl
 yfinance
 datetime
 plotly
-hashlib
 sqlalchemy
