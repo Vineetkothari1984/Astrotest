@@ -5,40 +5,24 @@ import re
 import plotly.graph_objects as go
 from datetime import datetime
 from datetime import timedelta
+from sqlalchemy import create_engine
 import base64
-from database import read_table
 
-import os
-import json
 import hashlib
 
+DATABASE_URL = "postgresql://numeroniq-db_owner:npg_EWIGjD91LKxP@ep-muddy-boat-a15emu03-pooler.ap-southeast-1.aws.neon.tech/numeroniq-db?sslmode=require"
+engine = create_engine(DATABASE_URL)
+
 # Utility function to hash passwords
-def hash_password(password: str) -> str:
+def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-
-def load_credentials() -> dict:
-    """Load credentials from environment or a JSON file."""
-    creds_env = os.environ.get("NUMERONIQ_CREDENTIALS")
-    if creds_env:
-        try:
-            return json.loads(creds_env)
-        except json.JSONDecodeError:
-            st.error("Invalid format in NUMERONIQ_CREDENTIALS")
-            return {}
-
-    try:
-        with open("credentials.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except json.JSONDecodeError:
-        st.error("Invalid JSON in credentials file")
-        return {}
-
-
-# Format: username -> hashed_password
-USER_CREDENTIALS = load_credentials()
+# Format: username: hashed_password
+USER_CREDENTIALS = {
+    "admin": hash_password("admin123"),
+    "transleads": hash_password("leads27"),
+    "vin": hash_password("vin69"),
+}
 
 # Check login status
 if "authenticated" not in st.session_state:
@@ -46,29 +30,21 @@ if "authenticated" not in st.session_state:
 
 def login():
     st.title("🔐 Secure Access")
-
-    if not USER_CREDENTIALS:
-        st.error("No credentials configured. Set the NUMERONIQ_CREDENTIALS env var or credentials.json")
-        return
-
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        hashed = hash_password(password)
-        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == hashed:
+        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == hash_password(password):
             st.session_state.authenticated = True
             st.session_state.username = username
             st.rerun()
         else:
             st.error("❌ Invalid username or password")
 
-# Require login before running the app
 if not st.session_state.authenticated:
     login()
     st.stop()
 
-# Set wide layout
 st.set_page_config(page_title="Numeroniq", layout="wide")
 
 # Inject CSS and JS to disable text selection and right-click
@@ -99,6 +75,7 @@ st.markdown("""
     document.addEventListener('contextmenu', event => event.preventDefault());
     </script>
     """, unsafe_allow_html=True)
+
 # Disable right click with JavaScript
 st.markdown("""
     <script>
@@ -146,37 +123,109 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # Load stock data
 @st.cache_data
 def load_stock_data():
-    df = read_table("stocks")
-    df['NSE LISTING DATE'] = pd.to_datetime(df['NSE LISTING DATE'], errors='coerce')
-    df['BSE LISTING DATE'] = pd.to_datetime(df['BSE LISTING DATE'], errors='coerce')
-    df['DATE OF INCORPORATION'] = pd.to_datetime(df['DATE OF INCORPORATION'], errors='coerce')
+    query = "SELECT * FROM companies"
+    df = pd.read_sql(query, engine)
+    for col in ["nse_listing_date", "bse_listing_date", "date_of_incorporation"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
+
     return df
 
 @st.cache_data(ttl=3600)
 def load_excel_data(file):
-    table_map = {
-        "nifty.xlsx": "nifty",
-        "banknifty.xlsx": "banknifty",
-        "moon.xlsx": "moon",
-        "mercury.xlsx": "mercury",
-        "mercurycom.xlsx": "mercurycom",
-        "panchak.xlsx": "panchak",
+    index_name_map = {
+        "nifty.xlsx": "Nifty",
+        "banknifty.xlsx": "BankNifty"
     }
-    table = table_map.get(file)
-    if table is None:
-        raise ValueError(f"Unknown file: {file}")
-    df = read_table(table)
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"])
-        df.set_index("Date", inplace=True)
+
+    index_name = index_name_map.get(file)
+    if not index_name:
+        st.error(f"Unsupported file: {file}")
+        return pd.DataFrame()
+
+    query = """
+        SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+        FROM ohlc_index
+        WHERE index_name = %s
+        ORDER BY "Date"
+    """
+    df = pd.read_sql(query, engine, params=(index_name,))
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.rename(columns={"Vol(in M)": "Volume"}, inplace=True)
+    df.set_index('Date', inplace=True)
     return df
 
 # Load numerology data
 @st.cache_data
 def load_numerology_data():
-    df = read_table("numerology")
+    query = "SELECT * FROM numerology ORDER BY date"
+    df = pd.read_sql(query, engine)
     df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
     return df
+
+# Load moon data
+@st.cache_data
+def load_moon_data():
+    query = 'SELECT * FROM moon_phases ORDER BY "Date"'
+    df = pd.read_sql(query, engine)
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df.rename(columns={"a_or_p": "A/P", "paksh": "Paksh"}, inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce') 
+    return df
+
+# Load Mercury data
+@st.cache_data
+def load_mercury_data():
+    query = 'SELECT * FROM mercury_phases ORDER BY "Date"'
+    df = pd.read_sql(query, engine)
+    df.rename(columns={"dr": "D/R"}, inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    return df
+
+# Load Combust data
+@st.cache_data
+def load_combust_data():
+    query = 'SELECT * FROM mercury_combust ORDER BY "Start Date"'
+    df = pd.read_sql(query, engine)
+    df['Start Date'] = pd.to_datetime(df['Start Date'], dayfirst=True, errors='coerce')
+    df['End Date'] = pd.to_datetime(df['End Date'], dayfirst=True, errors='coerce')
+    return df
+
+# Load Mercury Ingress data
+@st.cache_data
+def load_mercury_ingress():
+    query = "SELECT * FROM mercury_ingress ORDER BY date"
+    df = pd.read_sql(query, engine)
+    df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
+    return df
+
+def highlight_mercury_ingress_rows(row, ingress_dates):
+    d = row['Date'].date() if isinstance(row['Date'], pd.Timestamp) else None
+    if d in ingress_dates:
+        return ['background-color: #ffdd57'] * len(row)  # Light yellow
+    return [''] * len(row)
+
+# Load Panchak Data
+@st.cache_data
+def load_panchak_data():
+    query = 'SELECT * FROM panchak_periods ORDER BY "Start Date"'
+    df = pd.read_sql(query, engine)
+    df['Start Date'] = pd.to_datetime(df['Start Date'], dayfirst=True, errors='coerce')
+    df['End Date'] = pd.to_datetime(df['End Date'], dayfirst=True, errors='coerce')
+    return df
+
+panchak_df = load_panchak_data()
+
+def highlight_moon_and_ingress_rows(row, amavasya_dates, poornima_dates, ingress_dates):
+    d = row['Date'].date() if isinstance(row['Date'], pd.Timestamp) else None
+    if d in amavasya_dates:
+        return ['background-color: #ffcccc'] * len(row)  # Light red
+    elif d in poornima_dates:
+        return ['background-color: #ccf2ff'] * len(row)  # Sky blue
+    elif d in ingress_dates:
+        return ['background-color: #ffdd57'] * len(row)  # Light yellow
+    return [''] * len(row)
+
 
 def calculate_destiny_number(date_obj):
     if pd.isnull(date_obj):
@@ -193,6 +242,46 @@ def get_stock_data(ticker, start_date, end_date):
     stock_data = yf.download(ticker, start=start_date, end=end_date, multi_level_index = False)
     return stock_data
 
+def get_combined_index_data(index_name, start_date, end_date):
+    import yfinance as yf
+    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+
+    ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
+
+    # Step 1: Fetch from PostgreSQL
+    query = '''
+        SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+        FROM ohlc_index
+        WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+        ORDER BY "Date"
+    '''
+    df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.set_index('Date', inplace=True)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep='last')]
+
+    # Step 2: Check if any dates are missing
+    missing_dates = full_range.difference(df.index)
+    if not missing_dates.empty:
+        fetch_start = missing_dates.min()
+        fetch_end = end_date + pd.Timedelta(days=1)
+
+        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
+        if not yf_data.empty:
+            append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
+            append_df.reset_index(inplace=True)
+            append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+            append_df['index_name'] = index_name
+            append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+
+            # Combine with original
+            append_df.set_index('Date', inplace=True)
+            df = pd.concat([df, append_df])
+            df = df[~df.index.duplicated(keep='last')]
+
+    # Step 3: Return full data aligned to date range
+    return df.reindex(full_range)
 
 def plot_candlestick_chart(stock_data, vertical_lines=None):
 
@@ -401,7 +490,8 @@ filter_mode = st.sidebar.radio(
         "Mercury",
         "Mercury Combust",
         "Sun Number Dates",
-        "Panchak",])
+        "Panchak",
+        "Range"])
 
 if filter_mode == "Filter by Sector/Symbol":
     # === Sector Filter ===
@@ -1111,190 +1201,126 @@ elif filter_mode == "Company Overview":
 elif filter_mode == "View Nifty/BankNifty OHLC":
     st.subheader("📈 Nifty & BankNifty OHLC Viewer")
 
-    import yfinance as yf
     from datetime import datetime
+    import yfinance as yf
 
     index_choice = st.selectbox("Select Index:", ["Nifty 50", "Bank Nifty"])
+    symbol = "^NSEI" if index_choice == "Nifty 50" else "^NSEBANK"
+    index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
 
-    if index_choice == "Nifty 50":
-        file = "nifty.xlsx"
-        symbol = "^NSEI"
-    else:
-        file = "banknifty.xlsx"
-        symbol = "^NSEBANK"
+    def get_index_ohlc(index_name, ticker, start_date, end_date):
+        full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
 
-    excel_data = load_excel_data(file)
-    last_excel_date = excel_data.index[-1].date()
+        # Try to get existing data from DB
+        query = '''
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        '''
+        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df = df.sort_index()
+        df = df[~df.index.duplicated(keep='last')]
 
-    # Fetch data from yfinance only after last_excel_date
-    @st.cache_data(ttl=3600)
-    def fetch_yfinance_data(symbol, start_date):
-        yf_data = yf.download(symbol, start=start_date, interval="1d", multi_level_index= False)[['Open', 'High', 'Low', 'Close', 'Volume']]
-        return yf_data
+        # Fill missing from yFinance
+        missing_dates = full_range.difference(df.index)
+        if not missing_dates.empty:
+            fetch_start = missing_dates.min()
+            yf_data = yf.download(ticker, start=fetch_start, end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index=False)
+            if not yf_data.empty:
+                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                append_df.reset_index(inplace=True)
+                append_df['index_name'] = index_name
+                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                append_df.set_index('Date', inplace=True)
+                df = pd.concat([df, append_df])
+                df = df[~df.index.duplicated(keep='last')]
 
-    today = datetime.today().date()
-    if last_excel_date < today:
-        yf_data = fetch_yfinance_data(symbol, start_date=last_excel_date + pd.Timedelta(days=1))
-        full_data = pd.concat([excel_data, yf_data])
-    else:
-        full_data = excel_data.copy()
+        return df.reindex(full_range)
 
-    # Calculate Volatility % and Close %
-    full_data['Volatility %'] = ((full_data['High'] - full_data['Low']) / full_data['Low']) * 100
-    full_data['Close %'] = full_data['Close'].pct_change() * 100
+    # Load numerology
+    numerology_aligned = numerology_df.copy()
+    numerology_aligned['date'] = pd.to_datetime(numerology_aligned['date'], errors='coerce')
+    numerology_aligned = numerology_aligned.set_index('date')
 
-    full_data['Volatility %'] = full_data['Volatility %'].round(2)
-    full_data['Close %'] = full_data['Close %'].round(2)
+    # Default date range
+    today = pd.to_datetime("today").normalize()
+    default_end = today
+    default_start = today - pd.Timedelta(days=90)
 
-    full_data['Day'] = full_data.index.day
-    full_data['Month'] = full_data.index.month
+    start_date = st.date_input("Start Date", value=default_start, max_value=today)
+    end_date = st.date_input("End Date", value=default_end, min_value=start_date, max_value=today)
 
-
-    # Reorder columns: Volatility % and Close % first
-    reordered_cols = ['Volatility %', 'Close %', 'Open', 'High', 'Low', 'Close', 'Vol(in M)']
-    full_data = full_data[reordered_cols]
-
-    # Default date range: last 90 days
-    default_end_date = full_data.index.max()
-    default_start_date = default_end_date - timedelta(days=90)
-
-    # Let user choose range
-    start_date = st.date_input("Start Date", value=default_start_date,
-                               min_value=full_data.index.min().date(), 
-                               max_value=full_data.index.max().date())
-    end_date = st.date_input("End Date", value=default_end_date,
-                             min_value=full_data.index.min().date(),
-                             max_value=full_data.index.max().date())
-
-    # Ensure end_date is not earlier than start_date
     if start_date > end_date:
         st.error("End Date must be after Start Date")
-    else:
-        # Convert to datetime and filter
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
+        st.stop()
 
-        full_data = full_data.loc[(full_data.index >= start_dt) & (full_data.index <= end_dt)]
-        full_data = full_data.sort_index(ascending=False)
+    ohlc_data = get_index_ohlc(index_name, symbol, start_date, end_date)
+    ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
+    ohlc_data['Close %'] = ohlc_data['Close'].pct_change() * 100
+    ohlc_data['Volatility %'] = ohlc_data['Volatility %'].round(2)
+    ohlc_data['Close %'] = ohlc_data['Close %'].round(2)
+    ohlc_data['Day'] = ohlc_data.index.day
+    ohlc_data['Month'] = ohlc_data.index.month
 
-
-
-    # Filters in horizontal layout
     st.markdown("### 🔍 Filter OHLC Table")
     col1, col2, col3 = st.columns(3)
-
     with col1:
         vol_op = st.selectbox("Volatility Operator", ["All", "<", "<=", ">", ">=", "=="])
         vol_val = st.number_input("Volatility % Value", value=2.0, step=0.1)
-
     with col2:
         close_op = st.selectbox("Close % Operator", ["All", "<", "<=", ">", ">=", "=="])
         close_val = st.number_input("Close % Value", value=0.5, step=0.1)
+    with col3:
+        apply_day_month_filter = st.checkbox("🗓️ Filter by Day and Month", value=False)
 
-    # Checkbox to enable/disable Day & Month filter
-    apply_day_month_filter = st.checkbox("🗓️ Filter by Day and Month", value=False)
-
-
-    filtered_data = full_data.copy()
-
+    filtered_data = ohlc_data.copy()
     if vol_op != "All":
-        filtered_data = filtered_data.query(f"Volatility % {vol_op} @vol_val")
-
+        filtered_data = filtered_data.query(f"`Volatility %` {vol_op} @vol_val")
     if close_op != "All":
-        filtered_data = filtered_data.query(f"Close % {close_op} @close_val")
-
-    # Optional Day & Month filter
+        filtered_data = filtered_data.query(f"`Close %` {close_op} @close_val")
     if apply_day_month_filter:
-        st.markdown("### 📅 Filter by Day and Month")
         dcol1, dcol2 = st.columns(2)
-
         with dcol1:
             filter_day = st.number_input("Day (1-31)", min_value=1, max_value=31, value=1)
-
         with dcol2:
-            filter_month = st.selectbox(
-                "Month",
-                options=list(range(1, 13)),
-                format_func=lambda x: datetime(1900, x, 1).strftime('%B')
-            )
+            filter_month = st.selectbox("Month", list(range(1, 13)), format_func=lambda x: datetime(1900, x, 1).strftime('%B'))
+        filtered_data = filtered_data[(filtered_data.index.day == filter_day) & (filtered_data.index.month == filter_month)]
 
-        filtered_data = filtered_data[
-            (filtered_data.index.day == filter_day) &
-            (filtered_data.index.month == filter_month)
-        ]
-
-
-    # Merge numerology data with OHLC data on date
-    numerology_aligned = numerology_df.copy()
-    numerology_aligned = numerology_aligned.set_index('date')
-    numerology_aligned.index = pd.to_datetime(numerology_aligned.index)
-    
+    # Merge numerology
     full_data_merged = filtered_data.merge(numerology_aligned, left_index=True, right_index=True, how='left')
-
-
 
     # Numerology filters
     st.markdown("### 🧮 Numerology Filters")
     ncol1, ncol2, ncol3, ncol4, ncol5 = st.columns(5)
-
     with ncol1:
         bn_filter = st.selectbox("BN", ["All"] + sorted(numerology_df['BN'].dropna().unique()))
-
     with ncol2:
         dn_filter = st.selectbox("DN (Formatted)", ["All"] + sorted(numerology_df['DN (Formatted)'].dropna().unique()))
-
     with ncol3:
         sn_filter = st.selectbox("SN", ["All"] + sorted(numerology_df['SN'].dropna().unique()))
-
     with ncol4:
         hp_filter = st.selectbox("HP", ["All"] + sorted(numerology_df['HP'].dropna().unique()))
-
     with ncol5:
         dayn_filter = st.selectbox("Day Number", ["All"] + sorted(numerology_df['Day Number'].dropna().unique()))
 
-    # Apply numerology filters
-    filtered_merged = full_data_merged.copy()
     if bn_filter != "All":
-        filtered_merged = filtered_merged[filtered_merged['BN'] == bn_filter]
+        full_data_merged = full_data_merged[full_data_merged['BN'] == bn_filter]
     if dn_filter != "All":
-        filtered_merged = filtered_merged[filtered_merged['DN (Formatted)'] == dn_filter]
+        full_data_merged = full_data_merged[full_data_merged['DN (Formatted)'] == dn_filter]
     if sn_filter != "All":
-        filtered_merged = filtered_merged[filtered_merged['SN'] == sn_filter]
+        full_data_merged = full_data_merged[full_data_merged['SN'] == sn_filter]
     if hp_filter != "All":
-        filtered_merged = filtered_merged[filtered_merged['HP'] == hp_filter]
+        full_data_merged = full_data_merged[full_data_merged['HP'] == hp_filter]
     if dayn_filter != "All":
-        filtered_merged = filtered_merged[filtered_merged['Day Number'] == dayn_filter]
+        full_data_merged = full_data_merged[full_data_merged['Day Number'] == dayn_filter]
 
-    # Display filtered, aligned data
+    # Display final styled table
     st.markdown("### 🔢 OHLC + Numerology Alignment")
-    
-    # Reorder columns
-    ordered_cols = ['Volatility %', 'Close %', 'Open', 'High', 'Low', 'Close', 'Vol(in M)']
-    numerology_cols = ['BN', 'DN (Formatted)', 'SN', 'HP', 'Day Number', 'BN Planet','DN Planet', 'SN Planet', 'HP Planet', 'Day Number Planet']
-    # Include date as a column if it's not already (currently index)
-    filtered_merged_reset = filtered_merged.reset_index()
-    
-
-    # Final column order
-    final_order = ['Date'] + numerology_cols + ordered_cols
-    existing_cols = [col for col in final_order if col in filtered_merged_reset.columns]
-
-    # Desired column order (adjust as needed if columns vary)
-    desired_order = [
-        'Date',
-        'BN', 'DN (Formatted)', 
-        'SN', 'HP', 
-        'Day Number', 'BN Planet',
-        'DN Planet',  'SN Planet',
-        'HP Planet', 'Day Number Planet',
-        'Volatility %', 'Close %',
-        'Open', 'High',
-        'Low', 'Close', 'Vol(in M)'
-    ]
-    
-    # === Color-Coded Rows Based on Date ===
-
-    # Define target dates as (month, day)
+    final_df = full_data_merged.reset_index().rename(columns={"index": "Date"})
     primary_dates = {(3, 20),(3, 21), (6, 20), (6, 21), (9, 22), (9, 23), (12, 21), (12, 22)}
     secondary_dates = {(2, 4), (5, 6), (8, 8), (11, 7)}
 
@@ -1302,28 +1328,14 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
         date = pd.to_datetime(row['Date'])
         month_day = (date.month, date.day)
         if month_day in primary_dates:
-            return 'background-color: lightgreen'
+            return ['background-color: lightgreen'] * len(row)
         elif month_day in secondary_dates:
-            return 'background-color: lightsalmon'
+            return ['background-color: lightsalmon'] * len(row)
         else:
-            return ''
+            return [''] * len(row)
 
-    # Apply styles row-wise and format numbers
-    styled_df = (
-        filtered_merged_reset[existing_cols]
-        .style
-        .apply(lambda row: [highlight_rows(row)] * len(row), axis=1)
-        .format(precision=2)  # format all numeric columns to 2 decimal places
-    )
-
-
-    # Render as HTML
-    html_table = styled_df.to_html()
-
-    # Display
-    st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
-
-    
+    styled_df = final_df.style.apply(highlight_rows, axis=1).format(precision=2)
+    st.markdown(f'<div class="scroll-table">{styled_df.to_html()}</div>', unsafe_allow_html=True)
 
     if st.checkbox("📊 Show Candlestick Chart"):
         if not filtered_data.empty:
@@ -1336,7 +1348,6 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
                 increasing_line_color='green',
                 decreasing_line_color='red'
             )])
-
             candlestick.update_layout(
                 title='Candlestick Chart',
                 xaxis_title='Date',
@@ -1344,159 +1355,157 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
                 xaxis_rangeslider_visible=False,
                 height=600
             )
-
             st.plotly_chart(candlestick, use_container_width=True)
         else:
             st.warning("No data available for selected filters to display candlestick chart.")
-    
+
 elif filter_mode == "Equinox":
     st.subheader("📊 Nifty/BankNifty Report for Primary & Secondary Dates")
 
-    # Step 1: Choose Index
     index_choice = st.selectbox("Choose Index", ["Nifty 50", "Bank Nifty"], key="econ_index")
+    index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
+    ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
 
-    file = "nifty.xlsx" if index_choice == "Nifty 50" else "banknifty.xlsx"
+    def get_index_ohlc_data(index_name, ticker, start_date, end_date):
+        full_range = pd.date_range(start=start_date, end=end_date)
+        query = '''
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        '''
+        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df = df.sort_index()
 
-    ohlc_data = load_excel_data(file)
+        # Fill missing with Yahoo if needed
+        missing_dates = full_range.difference(df.index)
+        if not missing_dates.empty:
+            import yfinance as yf
+            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False)
+            if not yf_data.empty:
+                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
+                append_df.reset_index(inplace=True)
+                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+                append_df['index_name'] = index_name
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                append_df.set_index('Date', inplace=True)
+                df = pd.concat([df, append_df])
+                df = df[~df.index.duplicated(keep='last')]
 
-    # Recalculate Volatility % and Close %
-    ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
-    ohlc_data['Close %'] = ohlc_data['Close'].pct_change() * 100
+        return df.reindex(full_range)
 
-    # Round for display
-    ohlc_data['Volatility %'] = ohlc_data['Volatility %'].round(2)
-    ohlc_data['Close %'] = ohlc_data['Close %'].round(2)
-
-    # Ensure numerology dates are datetime
+    # Recalculate volatility & close %
     numerology_df['date'] = pd.to_datetime(numerology_df['date'], errors='coerce')
     numerology_data = numerology_df.set_index('date')
 
-    # Step 2: Define all valid numerology dates
     all_dates = numerology_df['date'].dropna().dt.date.unique()
     all_dates = sorted(pd.to_datetime(all_dates))
 
-    # Step 3: Time Period Selection
     st.markdown("### 🗓️ Select Time Period")
     min_date = min(all_dates)
     max_date = max(all_dates)
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "Start Date", 
-            value=pd.to_datetime("2024-04-01").date(),
-            min_value=min_date, 
-            max_value=max_date)
+        start_date = st.date_input("Start Date", value=pd.to_datetime("2024-04-01").date(), min_value=min_date, max_value=max_date)
     with col2:
-        end_date = st.date_input(
-            "End Date", 
-            value=pd.to_datetime("2025-06-01").date(), 
-            min_value=min_date, 
-            max_value=max_date)
+        end_date = st.date_input("End Date", value=pd.to_datetime("2025-06-01").date(), min_value=min_date, max_value=max_date)
 
     if start_date > end_date:
         st.error("Start date must be before or equal to end date.")
+        st.stop()
+
+    primary_dates = {(3, 21), (6, 20), (6, 21), (9, 22), (9, 23), (12, 21), (12, 22)}
+    secondary_dates = {(2, 4), (5, 6), (8, 8), (11, 7)}
+
+    def classify_date(dt):
+        m, d = dt.month, dt.day
+        if (m, d) in primary_dates:
+            return "Primary"
+        elif (m, d) in secondary_dates:
+            return "Secondary"
+        return None
+
+    filtered_dates = [dt for dt in all_dates if start_date <= dt.date() <= end_date]
+    ohlc_data = get_index_ohlc_data(index_name, ticker, start_date, end_date)
+
+    # Recalculate % columns
+    ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
+    ohlc_data['Close %'] = ohlc_data['Close'].pct_change() * 100
+    ohlc_data['Volatility %'] = ohlc_data['Volatility %'].round(2)
+    ohlc_data['Close %'] = ohlc_data['Close %'].round(2)
+
+    report_rows = []
+    for date in filtered_dates:
+        tag = classify_date(date)
+        if tag:
+            row = {"Date": date, "Category": tag}
+            date_index = pd.to_datetime(date)
+
+            if date_index in ohlc_data.index:
+                row.update(ohlc_data.loc[date_index].to_dict())
+            else:
+                for col in ['Open', 'High', 'Low', 'Close', 'Vol(in M)', 'Volatility %', 'Close %']:
+                    row[col] = float('nan')
+
+            if date_index in numerology_data.index:
+                row.update(numerology_data.loc[date_index].to_dict())
+
+            report_rows.append(row)
+
+    if report_rows:
+        final_df = pd.DataFrame(report_rows)
+        final_df = final_df.sort_values("Date", ascending=False).reset_index(drop=True)
+        final_df['Date'] = final_df['Date'].dt.strftime('%Y-%m-%d')
+
+        float_cols = ['Open', 'High', 'Low', 'Close', 'Vol(in M)', 'Volatility %', 'Close %']
+
+        # ✅ Force conversion of suspected columns
+        for col in float_cols:
+            if col in final_df.columns:
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
+
+        formatter_dict = {
+            col: "{:.2f}" for col in float_cols
+            if col in final_df.columns and pd.api.types.is_numeric_dtype(final_df[col])
+        }
+
+
+        def highlight_econ_rows(row):
+            date = pd.to_datetime(row['Date'], errors='coerce')
+            if pd.isna(date): return ''
+            md = (date.month, date.day)
+            if md in primary_dates:
+                return 'background-color: #d1fab8'
+            elif md in secondary_dates:
+                return 'background-color: #ffa868'
+            return ''
+
+        styled_df = final_df.style \
+            .apply(lambda row: [highlight_econ_rows(row)] * len(row), axis=1) \
+            .format(formatter_dict)
+
+        html_table = styled_df.to_html()
+        st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
     else:
-        # Define dates of interest
-        primary_dates = {(3, 21), (6, 20), (6, 21), (9, 22), (9, 23), (12, 21), (12, 22)}
-        secondary_dates = {(2, 4), (5, 6), (8, 8), (11, 7)}
-
-        def classify_date(dt):
-            m, d = dt.month, dt.day
-            if (m, d) in primary_dates:
-                return "Primary"
-            elif (m, d) in secondary_dates:
-                return "Secondary"
-            return None
-
-        # Filter numerology dates by selected period
-        filtered_dates = [dt for dt in all_dates if start_date <= dt.date() <= end_date]
-
-        report_rows = []
-        for date in filtered_dates:
-            tag = classify_date(date)
-            if tag:
-                row = {"Date": date, "Category": tag}
-
-                # OHLC if available
-                if date in ohlc_data.index:
-                    row.update(ohlc_data.loc[date].to_dict())
-                else:
-                    for col in ['Open', 'High', 'Low', 'Close', 'Vol(in M)', 'Volatility %', 'Close %']:
-                        row[col] = float('nan')
-
-                # Add numerology info if available
-                if date in numerology_data.index:
-                    row.update(numerology_data.loc[date].to_dict())
-
-                report_rows.append(row)
-
-        if report_rows:
-            final_df = pd.DataFrame(report_rows)
-            final_df = final_df.sort_values("Date", ascending=False).reset_index(drop=True)
-            final_df['Date'] = final_df['Date'].dt.strftime('%Y-%m-%d')
-
-            # Define float columns to round
-            float_cols = ['Open', 'High', 'Low', 'Close', 'Vol(in M)', 'Volatility %', 'Close %']
-            rounded_df = final_df.copy()
-
-            for col in float_cols:
-                if col in rounded_df.columns:
-                    rounded_df[col] = rounded_df[col].astype(float).round(2)
-
-            # Create formatter for 2 decimal places
-            formatter_dict = {col: "{:.2f}" for col in float_cols if col in rounded_df.columns}
-
-            # === Apply Row Highlights Based on Primary/Secondary ===
-            primary_dates = {(3, 21), (6, 20), (6, 21), (9, 22), (9, 23), (12, 21), (12, 22)}
-            secondary_dates = {(2, 4), (5, 6), (8, 8), (11, 7)}
-
-            def highlight_econ_rows(row):
-                date = pd.to_datetime(row['Date'], errors='coerce')
-                if pd.isna(date): return ''
-                md = (date.month, date.day)
-                if md in primary_dates:
-                    return 'background-color: #d1fab8'
-                elif md in secondary_dates:
-                    return 'background-color: #ffa868'
-                else:
-                    return ''
-
-            # Apply styling + formatting
-            styled_df = rounded_df.style \
-                .apply(lambda row: [highlight_econ_rows(row)] * len(row), axis=1) \
-                .format(formatter_dict)
-
-            # Render to HTML
-            html_table = styled_df.to_html()
-
-            # Display
-            st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
-
-        else:
-            st.info("No primary or secondary dates found in selected range.")
+        st.info("No primary or secondary dates found in selected range.")
 
 elif filter_mode == "Moon":
     st.header("🌑 Moon Phase Analysis")
 
     # Load moon data
-    moon_df = read_table("moon")
-    moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
+    moon_df = load_moon_data()
     moon_df = moon_df.sort_values('Date')
-
-    # Load stock symbols
-    doc_df = read_table("stocks")
+    doc_df = load_stock_data()
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
-
-    # Load numerology
     numerology_df['date'] = pd.to_datetime(numerology_df['date'], dayfirst=True)
-
-    # Moon Phase & Date
     phase_choice = st.selectbox("Select Moon Phase:", ["Amavasya", "Poornima"])
+
     # Filter moon phase based on user selection
     phase_filtered = moon_df[moon_df['A/P'].str.lower() == phase_choice.lower()]
     available_dates = phase_filtered['Date'].dt.date.tolist()
 
-    # Determine default date within last 30 days if possible
     today = pd.Timestamp.today().normalize()
     one_month_ago = today - pd.Timedelta(days=30)
 
@@ -1510,7 +1519,6 @@ elif filter_mode == "Moon":
         index=available_dates.index(default_date)
     )
     selected_date = pd.to_datetime(selected_date_str)
-
 
     # Moon Info
     match = moon_df[moon_df['Date'].dt.date == selected_date.date()]
@@ -1578,7 +1586,6 @@ elif filter_mode == "Moon":
             html_table = combined_reset.to_html(index=False)
             st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
 
-
     # --- INDEX SECTION ---
     st.subheader("📊 Nifty / BankNifty OHLC + Numerology")
 
@@ -1593,6 +1600,7 @@ elif filter_mode == "Moon":
         index_range = pd.DataFrame(index=all_dates)
         index_range[['Open', 'High', 'Low', 'Close', 'Volume']] = float('nan')
     else:
+        index_range = index_range[~index_range.index.duplicated(keep='last')]
         index_range = index_range.reindex(all_dates)
 
     numerology_subset = numerology_df.set_index('date')
@@ -1616,11 +1624,11 @@ elif filter_mode == "Mercury":
     st.header("🪐Mercury Phase Analysis")
 
     # Load mercury data
-    mercury_df = read_table("mercury")
+    mercury_df = load_mercury_data()
     mercury_df['Date'] = pd.to_datetime(mercury_df['Date'], dayfirst=True)
     mercury_df = mercury_df.sort_values('Date')
     # Load moon phase data
-    moon_df = read_table("moon")
+    moon_df = load_moon_data()
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
 
     # Get dates for Amavasya and Poornima
@@ -1628,8 +1636,8 @@ elif filter_mode == "Mercury":
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == "poornima"]['Date'].dt.date)
 
 
-    # Load stock symbols
-    doc_df = read_table("stocks")
+    # Load stock symbols from doc.xlsx
+    doc_df = load_stock_data()
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
 
     # Load numerology
@@ -1640,7 +1648,7 @@ elif filter_mode == "Mercury":
 
     # Step 2: Filter dates based on the chosen phase
     phase_filtered = mercury_df[mercury_df['D/R'].str.lower() == phase_choice.lower()]
-    available_dates = phase_filtered['Date'].dt.date.tolist()
+    available_dates = phase_filtered['Date'].dropna().dt.date.tolist()
 
     # Step 3: Compute the default date (last 30 days logic)
     today = pd.Timestamp.today().normalize()
@@ -1879,13 +1887,13 @@ elif filter_mode == "Panchak":
     st.title("📅 Panchak Dates Analysis")
 
     # Load Panchak data
-    panchak_df = read_table("panchak")
+    panchak_df = load_panchak_data()
     panchak_df['Start Date'] = pd.to_datetime(panchak_df['Start Date'], errors='coerce', dayfirst=True)
     panchak_df['End Date'] = pd.to_datetime(panchak_df['End Date'], errors='coerce', dayfirst=True)
     panchak_df = panchak_df.dropna(subset=['Start Date', 'End Date']).sort_values('Start Date').reset_index(drop=True)
 
     # Load moon data
-    moon_df = read_table("moon")
+    moon_df = load_moon_data()
     moon_df['Date'] = pd.to_datetime(moon_df['Date'], errors='coerce')
     amavasya_dates = set(moon_df[moon_df['A/P'].str.lower() == "amavasya"]['Date'].dt.date)
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == "poornima"]['Date'].dt.date)
@@ -1894,7 +1902,6 @@ elif filter_mode == "Panchak":
     symbol_list = ["Nifty", "BankNifty"] + sorted(stock_df['Symbol'].dropna().unique().tolist())
     selected_symbol = st.selectbox("Select Symbol", symbol_list)
 
-    # Select Panchak start date
     # Define today's date and the cutoff for the last month
     today = pd.Timestamp.today().normalize()
     one_month_ago = today - pd.Timedelta(days=30)
@@ -1922,29 +1929,50 @@ elif filter_mode == "Panchak":
     st.markdown(f"**Start Time:** {row['Start Time']} | **End Time:** {row['End Time']}")
     st.markdown(f"**Start Degree:** {row['Degree']:.4f}")
 
-    # Helper: load + update index data
     def get_combined_index_data(symbol, start_date, end_date):
-        file = "nifty.xlsx" if symbol == "Nifty" else "banknifty.xlsx"
+
+        index_name = "Nifty" if symbol == "Nifty" else "BankNifty"
         ticker = "^NSEI" if symbol == "Nifty" else "^NSEBANK"
 
-        df = load_excel_data(file).reset_index().rename(columns={'index': 'Date'})
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date'])
+        # Step 1: Try fetching from DB
+        query = '''
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        '''
+        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+        df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
-        df = df.sort_index()
+        df = df[~df.index.duplicated(keep='last')]
 
-        latest_local_date = df.index.max().date()
-        if end_date.date() > latest_local_date:
-            import yfinance as yf
-            fetch_start = latest_local_date + pd.Timedelta(days=1)
-            yf_data = yf.download(ticker, start=fetch_start, end=end_date + pd.Timedelta(days=1), progress=False)
+        # Step 2: Find missing dates in range
+        full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+        missing_dates = full_range.difference(df.index)
+
+        if not missing_dates.empty:
+            fetch_start = missing_dates.min()
+            fetch_end = end_date + pd.Timedelta(days=1)
+
+            yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
+
             if not yf_data.empty:
-                yf_data = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
-                yf_data.index = pd.to_datetime(yf_data.index)
-                df = pd.concat([df, yf_data[~yf_data.index.isin(df.index)]])
+                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                append_df.reset_index(inplace=True)
+                append_df['index_name'] = index_name
+                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+
+                # Insert new rows to DB
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+
+                # Add to current DataFrame
+                append_df.set_index('Date', inplace=True)
+                df = pd.concat([df, append_df])
                 df = df[~df.index.duplicated(keep='last')]
 
-        return df.loc[start_date:end_date - pd.Timedelta(days=1)]
+        # Step 3: Return data reindexed over requested date range
+        return df.reindex(full_range)
+
 
     # Get OHLC data
     if selected_symbol in ["Nifty", "BankNifty"]:
@@ -2048,45 +2076,43 @@ elif filter_mode == "Panchak":
 elif filter_mode == "Mercury Combust":
     st.header("🔥 Mercury Combust Period Analysis")
 
-    # Load combustion data
-    combust_df = read_table("mercurycom")
-    combust_df['Start Date'] = pd.to_datetime(combust_df['Start Date'], dayfirst=True)
-    combust_df['End Date'] = pd.to_datetime(combust_df['End Date'], dayfirst=True)
+    # Load data from DB
+    combust_df = load_combust_data()
+    moon_df = load_moon_data()
+    doc_df = load_stock_data()
+    numerology_df['date'] = pd.to_datetime(numerology_df['date'], errors='coerce')
+    numerology_subset = numerology_df.set_index('date')
 
-    # Load moon data
-    moon_df = read_table("moon")
-    moon_df['Date'] = pd.to_datetime(moon_df['Date'], dayfirst=True)
+    # Extract Moon Phase Dates
     amavasya_dates = set(moon_df[moon_df['A/P'].str.lower() == 'amavasya']['Date'].dt.date)
     poornima_dates = set(moon_df[moon_df['A/P'].str.lower() == 'poornima']['Date'].dt.date)
 
-    # Load numerology
-    numerology_df['date'] = pd.to_datetime(numerology_df['date'], dayfirst=True)
+    # Prepare valid dates from combust periods
+    valid_dates = sorted(set(
+        date for _, row in combust_df.iterrows()
+        for date in pd.date_range(row['Start Date'], row['End Date'])
+    ))
 
-    # Let user pick a date
-    # Generate list of valid dates from combustion periods
-    valid_dates = []
-    for _, row in combust_df.iterrows():
-        valid_dates.extend(pd.date_range(row['Start Date'], row['End Date']))
-    valid_dates = sorted(set(valid_dates))  # remove duplicates
-
-    # Filter to recent dates for default
     recent_cutoff = pd.Timestamp.today().normalize() - pd.Timedelta(days=30)
     recent_dates = [d for d in valid_dates if d >= recent_cutoff]
-
-    # Set default date to most recent or fallback to last date
     default_date = recent_dates[0] if recent_dates else valid_dates[-1]
 
-    # Show dropdown of valid dates
-    selected_date = st.selectbox("Select a Date in Combust Period:", [d.date() for d in valid_dates], index=[d.date() for d in valid_dates].index(default_date.date()))
+    selected_date = st.selectbox(
+        "Select a Date in Combust Period:",
+        [d.date() for d in valid_dates],
+        index=[d.date() for d in valid_dates].index(default_date.date())
+    )
 
-
-    # Check combustion period
-    match = combust_df[(combust_df['Start Date'] <= pd.Timestamp(selected_date)) & (combust_df['End Date'] >= pd.Timestamp(selected_date))]
-
+    # Filter to matching combust period
+    match = combust_df[
+        (combust_df['Start Date'] <= pd.Timestamp(selected_date)) &
+        (combust_df['End Date'] >= pd.Timestamp(selected_date))
+    ]
     if match.empty:
         st.warning("Selected date does not fall under any Mercury Combust period.")
         st.stop()
 
+    # Get combust period range
     start_date = match.iloc[0]['Start Date']
     end_date = match.iloc[0]['End Date']
 
@@ -2094,9 +2120,8 @@ elif filter_mode == "Mercury Combust":
     st.markdown(f"**Start Time:** {match.iloc[0]['Start Time']} | **End Time:** {match.iloc[0]['End Time']}")
     st.markdown(f"**Start Degree:** {match.iloc[0]['Start Degree']} | **End Degree:** {match.iloc[0]['End Degree']}")
 
-    # SYMBOL SECTION
+    # --- SYMBOL SECTION ---
     st.subheader("📈 Symbol OHLC + Numerology")
-    doc_df = read_table("stocks")
     available_symbols = sorted(doc_df['Symbol'].dropna().unique().tolist())
     selected_symbol = st.selectbox("Select Stock Symbol:", available_symbols)
 
@@ -2104,15 +2129,13 @@ elif filter_mode == "Mercury Combust":
     if listing_row.empty or pd.isnull(listing_row.iloc[0]['DATE OF INCORPORATION']):
         st.warning("Listing date unavailable.")
         st.stop()
-    else:
-        listing_date = pd.to_datetime(listing_row.iloc[0]['DATE OF INCORPORATION'])
-        if start_date < listing_date:
-            st.warning(f"{selected_symbol} was not listed during this combustion period.")
-            st.stop()
 
-    # Get OHLCV data (replace with your method)
-    ticker = selected_symbol + ".NS"
-    stock_data = get_stock_data(ticker, start_date, end_date)
+    listing_date = pd.to_datetime(listing_row.iloc[0]['DATE OF INCORPORATION'])
+    if start_date < listing_date:
+        st.warning(f"{selected_symbol} was not listed during this combustion period.")
+        st.stop()
+
+    stock_data = get_stock_data(selected_symbol + ".NS", start_date, end_date)
     all_days = pd.date_range(start=start_date, end=end_date)
 
     if stock_data.empty:
@@ -2121,10 +2144,9 @@ elif filter_mode == "Mercury Combust":
     else:
         stock_data = stock_data.reindex(all_days)
 
-    numerology_subset = numerology_df.set_index('date')
     combined = stock_data.merge(numerology_subset, left_index=True, right_index=True, how='left')
+    combined_reset = combined.reset_index().rename(columns={'index': 'Date'})
 
-    # Highlight Moon Phases
     def highlight_moon_rows(row):
         d = row['Date'].date() if isinstance(row['Date'], pd.Timestamp) else None
         if d in amavasya_dates:
@@ -2133,31 +2155,174 @@ elif filter_mode == "Mercury Combust":
             return ['background-color: #ccf2ff'] * len(row)
         return [''] * len(row)
 
-    combined_reset = combined.reset_index()
-    combined_reset.rename(columns={'index': 'Date'}, inplace=True)
-
     styled_df = combined_reset.style.apply(highlight_moon_rows, axis=1).format(precision=2)
-    st.markdown(styled_df.to_html(), unsafe_allow_html=True)
+    st.markdown(f'<div class="scroll-table">{styled_df.to_html()}</div>', unsafe_allow_html=True)
 
-    # INDEX SECTION
+    # --- INDEX SECTION ---
     st.subheader("📊 Nifty / BankNifty OHLC + Numerology")
     index_choice = st.radio("Select Index:", ["Nifty 50", "Bank Nifty"])
-    index_file = "nifty.xlsx" if index_choice == "Nifty 50" else "banknifty.xlsx"
+    index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
 
-    index_df = load_excel_data(index_file)
-    index_range = index_df[(index_df.index >= start_date) & (index_df.index <= end_date)].reindex(all_days)
-    index_combined = index_range.merge(numerology_subset, left_index=True, right_index=True, how='left')
-    index_combined = index_combined.loc[all_days]
+    index_data = get_combined_index_data(index_name, start_date, end_date)
+    index_data = index_data.reindex(all_days)
+    index_combined = index_data.merge(numerology_subset, left_index=True, right_index=True, how='left')
 
     if index_combined['High'].notna().any():
         high_val = index_combined['High'].max()
         low_val = index_combined['Low'].min()
-        st.markdown(f"**📈 High:** {high_val} | 📉 Low:** {low_val}")
+        st.markdown(f"**📈 High:** {high_val:.2f} | 📉 Low:** {low_val:.2f}")
     else:
         st.info("No index OHLC data available in this period.")
 
-    index_combined_reset = index_combined.reset_index()
-    index_combined_reset.rename(columns={'index': 'Date'}, inplace=True)
+    index_combined_reset = index_combined.reset_index().rename(columns={"index": "Date"})
     styled_index = index_combined_reset.style.apply(highlight_moon_rows, axis=1).format(precision=2)
-    st.markdown(styled_index.to_html(), unsafe_allow_html=True)
+    st.markdown(f'<div class="scroll-table">{styled_index.to_html()}</div>', unsafe_allow_html=True)
 
+elif filter_mode == "Range":
+    st.subheader("📊 Full Range Levels (Nifty)")
+
+    def generate_stacked_levels(base_high, base_low, sp_levels, levels_up=2, levels_down=2):
+        range_val = round(base_high - base_low, 2)
+        levels_output = []
+
+        # Level 1 (original)
+        high = base_high
+        low = base_low
+        mp = round(high - sp_levels[0], 2)
+
+        levels_output.append(("🔺 Level 1", ""))
+        levels_output.append(("High 1", high))
+        for i, sp in enumerate(sp_levels):
+            levels_output.append((f"mp1 + sp{i+1}", round(mp + sp, 2)))
+        levels_output.append(("mp1", mp))
+        for i, sp in enumerate(sp_levels):
+            levels_output.append((f"mp1 - sp{i+1}", round(mp - sp, 2)))
+        levels_output.append(("Low 1", low))
+
+        # Levels Above
+        current_high = high
+        for level in range(2, levels_up + 2):
+            prev_high = current_high
+            current_high = round(prev_high + range_val, 2)
+            current_low = prev_high
+            mp = round(current_high - sp_levels[0], 2)
+
+            levels_output.append((f"🔺 Level {level}", ""))
+            levels_output.append((f"High {level}", current_high))
+            for i, sp in enumerate(sp_levels):
+                levels_output.append((f"mp{level} + sp{i+1}", round(mp + sp, 2)))
+            levels_output.append((f"mp{level}", mp))
+            for i, sp in enumerate(sp_levels):
+                levels_output.append((f"mp{level} - sp{i+1}", round(mp - sp, 2)))
+            levels_output.append((f"Low {level}", current_low))
+
+        # Levels Below
+        current_low = low
+        for level in range(0, levels_down):
+            level_id = f"0" if level == 0 else f"-{level}"
+            prev_low = current_low
+            current_low = round(prev_low - range_val, 2)
+            current_high = prev_low
+            mp = round(current_low + sp_levels[0], 2)
+
+            levels_output.append((f"🔻 Level {level_id}", ""))
+            levels_output.append((f"High {level_id}", current_high))
+            for i, sp in enumerate(sp_levels):
+                levels_output.append((f"mp{level_id} + sp{i+1}", round(mp + sp, 2)))
+            levels_output.append((f"mp{level_id}", mp))
+            for i, sp in enumerate(sp_levels):
+                levels_output.append((f"mp{level_id} - sp{i+1}", round(mp - sp, 2)))
+            levels_output.append((f"Low {level_id}", current_low))
+
+        return pd.DataFrame(levels_output, columns=["Label", "Level"])
+
+    # === MONTHLY RANGE ===
+    st.markdown("## 🗓️ Monthly Range")
+    panchak_df = load_panchak_data()
+    today = pd.Timestamp.today()
+    first_of_month = today.replace(day=1)
+
+    recent_panchak = panchak_df[
+        (panchak_df['Start Date'] >= first_of_month) &
+        (panchak_df['Start Date'] <= today)
+    ].sort_values("Start Date", ascending=False)
+
+    if not recent_panchak.empty:
+        row = recent_panchak.iloc[0]
+        start_date = row['Start Date']
+        end_date = row['End Date']
+
+        ohlc = get_combined_index_data("Nifty", start_date, end_date)
+        high = ohlc['High'].max()
+        low = ohlc['Low'].min()
+        range_val = round(high - low, 2)
+
+        sp_levels = []
+        current = range_val
+        while True:
+            sp = round(current / 2, 2)
+            if sp < 10:
+                break
+            sp_levels.append(sp)
+            current = sp
+
+        st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+        df_monthly = generate_stacked_levels(high, low, sp_levels)
+        st.dataframe(df_monthly.style.format(precision=2))
+    else:
+        st.info("No Panchak range found for current month.")
+
+    # === FORTNIGHTLY RANGE ===
+    st.markdown("## 🌕 Fortnightly Range (Amavasya or Poornima)")
+    moon_df = load_moon_data()
+    moon_df = moon_df.sort_values("Date")
+    recent_moon = moon_df[moon_df['Date'] <= today].iloc[-1]
+    next_moon = moon_df[moon_df['Date'] > recent_moon['Date']].iloc[0]
+
+    start_date = recent_moon['Date']
+    end_date = next_moon['Date']
+
+    ohlc = get_combined_index_data("Nifty", start_date, end_date)
+    high = ohlc['High'].max()
+    low = ohlc['Low'].min()
+    range_val = round(high - low, 2)
+
+    sp_levels = []
+    current = range_val
+    while True:
+        sp = round(current / 2, 2)
+        if sp < 10:
+            break
+        sp_levels.append(sp)
+        current = sp
+
+    st.markdown(f"**Amavasya/Poornima Period:** {start_date.date()} to {end_date.date()}")
+    st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+    df_fortnight = generate_stacked_levels(high, low, sp_levels)
+    st.dataframe(df_fortnight.style.format(precision=2))
+
+    # === WEEKLY RANGE ===
+    st.markdown("## 📅 Weekly Range (Monday to Today)")
+    most_recent_monday = today - pd.Timedelta(days=today.weekday())
+
+    monday_date = today - pd.Timedelta(days=today.weekday())
+    ohlc = get_combined_index_data("Nifty", monday_date, monday_date + pd.Timedelta(days=1))
+    high = ohlc['High'].iloc[0]
+    low = ohlc['Low'].iloc[0]
+    range_val = round(high - low, 2)
+
+    sp_levels = []
+    current = range_val
+    max_sp_levels = 10  # hard limit to prevent infinite loop
+
+    while len(sp_levels) < max_sp_levels:
+        sp = round(current / 2, 2)
+        if sp < 10:
+            break
+        sp_levels.append(sp)
+        current = sp
+
+    st.markdown(f"**This Week:** {start_date.date()} to {end_date.date()}")
+    st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+    df_weekly = generate_stacked_levels(high, low, sp_levels)
+    st.dataframe(df_weekly.style.format(precision=2))
