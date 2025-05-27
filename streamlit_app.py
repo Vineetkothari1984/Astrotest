@@ -131,6 +131,19 @@ def load_stock_data():
 
     return df
 
+
+def highlight_range_levels(row):
+    label = str(row["Label"]).lower()
+    if "high" in label and "sp" not in label:
+        return ['background-color: #ccffcc'] * len(row)  # green
+    elif "low" in label and "sp" not in label:
+        return ['background-color: #ffcccc'] * len(row)  # red
+    elif "midpoint" in label or (label.startswith("mp") and "+" not in label and "-" not in label):
+        return ['background-color: #ffffcc'] * len(row)  # yellow
+    else:
+        return ['background-color: #eeeeee'] * len(row)  # gray
+
+
 @st.cache_data(ttl=3600)
 def load_excel_data(file):
     index_name_map = {
@@ -259,9 +272,17 @@ def get_combined_index_data(index_name, start_date, end_date):
     df['Date'] = pd.to_datetime(df['Date'])
     df.set_index('Date', inplace=True)
     df = df.sort_index()
-    df = df[~df.index.duplicated(keep='last')]
 
-    # Step 2: Check if any dates are missing
+    # ✅ Step 2: Aggregate by Date
+    df = df.groupby(df.index).agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+        "Vol(in M)": "sum"
+    })
+
+    # Step 2: Check for missing dates and fetch from Yahoo
     missing_dates = full_range.difference(df.index)
     if not missing_dates.empty:
         fetch_start = missing_dates.min()
@@ -269,16 +290,29 @@ def get_combined_index_data(index_name, start_date, end_date):
 
         yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
         if not yf_data.empty:
-            append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
+            append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
             append_df.reset_index(inplace=True)
             append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-            append_df['index_name'] = index_name
-            append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+            append_df["index_name"] = index_name
 
-            # Combine with original
-            append_df.set_index('Date', inplace=True)
-            df = pd.concat([df, append_df])
-            df = df[~df.index.duplicated(keep='last')]
+            # ✅ Convert Volume to millions
+            append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
+
+            # ✅ Drop duplicates
+            append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
+
+            # ✅ Check if rows already exist in DB and exclude them
+            existing_dates = pd.read_sql(
+                'SELECT "Date" FROM ohlc_index WHERE index_name = %s AND "Date" IN %s',
+                engine,
+                params=(index_name, tuple(append_df["Date"].dt.date.unique()))
+            )["Date"].dt.normalize()
+
+            append_df = append_df[~append_df["Date"].isin(existing_dates)]
+
+            # ✅ Final safety check
+            if not append_df.empty:
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
 
     # Step 3: Return full data aligned to date range
     return df.reindex(full_range)
@@ -333,11 +367,9 @@ def plot_candlestick_chart(stock_data, vertical_lines=None):
     
     return fig
 
-
 # Load data
 stock_df = load_stock_data()
 numerology_df = load_numerology_data()
-
 
 # === Chaldean Numerology Setup ===
 chaldean_map = {
@@ -1234,7 +1266,15 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
                 append_df.reset_index(inplace=True)
                 append_df['index_name'] = index_name
                 append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                # Drop duplicates before inserting (if any)
+                append_df.drop_duplicates(subset=["Date", "index_name"], keep="last", inplace=True)
+
+                # Convert volume to millions if it's from Yahoo
+                append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
+
+                # Append to database
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False, method="multi")
+
                 append_df.set_index('Date', inplace=True)
                 df = pd.concat([df, append_df])
                 df = df[~df.index.duplicated(keep='last')]
@@ -2179,68 +2219,72 @@ elif filter_mode == "Mercury Combust":
     st.markdown(f'<div class="scroll-table">{styled_index.to_html()}</div>', unsafe_allow_html=True)
 
 elif filter_mode == "Range":
-    st.subheader("📊 Full Range Levels (Nifty)")
+    st.subheader("📊 Range Levels (Nifty)")
 
-    def generate_stacked_levels(base_high, base_low, sp_levels, levels_up=2, levels_down=2):
-        range_val = round(base_high - base_low, 2)
+    def generate_custom_levels(high, low, sp_levels, levels_up=2, levels_down=2):
+        sp1 = sp_levels[0]
+        range_val = round(high - low, 2)
         levels_output = []
 
-        # Level 1 (original)
-        high = base_high
-        low = base_low
-        mp = round(high - sp_levels[0], 2)
-
+        # === Level 1 (Original)
         levels_output.append(("🔺 Level 1", ""))
-        levels_output.append(("High 1", high))
-        for i, sp in enumerate(sp_levels):
-            levels_output.append((f"mp1 + sp{i+1}", round(mp + sp, 2)))
-        levels_output.append(("mp1", mp))
-        for i, sp in enumerate(sp_levels):
-            levels_output.append((f"mp1 - sp{i+1}", round(mp - sp, 2)))
-        levels_output.append(("Low 1", low))
+        levels_output.append(("High", high))
+        for i in reversed(range(1, len(sp_levels))):
+            levels_output.append((f"High - sp{i+1}", round(high - sp_levels[i], 2)))
+        midpoint = round(high - sp1, 2)
+        levels_output.append(("Midpoint", midpoint))
+        for i in range(1, len(sp_levels)):
+            levels_output.append((f"Low + sp{i+1}", round(low + sp_levels[i], 2)))
+        levels_output.append(("Low", low))
 
-        # Levels Above
+        # === Upper Levels (2+)
         current_high = high
         for level in range(2, levels_up + 2):
             prev_high = current_high
             current_high = round(prev_high + range_val, 2)
             current_low = prev_high
-            mp = round(current_high - sp_levels[0], 2)
+            mp = round(current_high - sp1, 2)
 
             levels_output.append((f"🔺 Level {level}", ""))
             levels_output.append((f"High {level}", current_high))
-            for i, sp in enumerate(sp_levels):
-                levels_output.append((f"mp{level} + sp{i+1}", round(mp + sp, 2)))
+            for i in reversed(range(1, len(sp_levels))):
+                levels_output.append((f"mp{level} - sp{i+1}", round(current_high - sp_levels[i], 2)))
             levels_output.append((f"mp{level}", mp))
-            for i, sp in enumerate(sp_levels):
-                levels_output.append((f"mp{level} - sp{i+1}", round(mp - sp, 2)))
+            for i in range(1, len(sp_levels)):
+                levels_output.append((f"mp{level} + sp{i+1}", round(current_low + sp_levels[i], 2)))
             levels_output.append((f"Low {level}", current_low))
 
-        # Levels Below
+        # === Lower Levels (Level 0, -1, -2)
         current_low = low
         for level in range(0, levels_down):
             level_id = f"0" if level == 0 else f"-{level}"
             prev_low = current_low
             current_low = round(prev_low - range_val, 2)
             current_high = prev_low
-            mp = round(current_low + sp_levels[0], 2)
+            mp = round(current_low + sp1, 2)
 
             levels_output.append((f"🔻 Level {level_id}", ""))
             levels_output.append((f"High {level_id}", current_high))
-            for i, sp in enumerate(sp_levels):
-                levels_output.append((f"mp{level_id} + sp{i+1}", round(mp + sp, 2)))
+            for i in reversed(range(1, len(sp_levels))):
+                levels_output.append((f"mp{level_id} - sp{i+1}", round(current_high - sp_levels[i], 2)))
             levels_output.append((f"mp{level_id}", mp))
-            for i, sp in enumerate(sp_levels):
-                levels_output.append((f"mp{level_id} - sp{i+1}", round(mp - sp, 2)))
+            for i in range(1, len(sp_levels)):
+                levels_output.append((f"mp{level_id} + sp{i+1}", round(current_low + sp_levels[i], 2)))
             levels_output.append((f"Low {level_id}", current_low))
 
         return pd.DataFrame(levels_output, columns=["Label", "Level"])
 
+
+    # === INPUT BLOCK ===
+    st.markdown("### 📅 Optional: Choose Custom Date Range")
+    user_start = st.date_input("Start Date (override)", value=None, key="range_start")
+    user_end = st.date_input("End Date (override)", value=None, key="range_end")
+
     # === MONTHLY RANGE ===
     st.markdown("## 🗓️ Monthly Range")
-    panchak_df = load_panchak_data()
     today = pd.Timestamp.today()
     first_of_month = today.replace(day=1)
+    panchak_df = load_panchak_data()
 
     recent_panchak = panchak_df[
         (panchak_df['Start Date'] >= first_of_month) &
@@ -2251,6 +2295,11 @@ elif filter_mode == "Range":
         row = recent_panchak.iloc[0]
         start_date = row['Start Date']
         end_date = row['End Date']
+
+        # Override if user provides dates
+        if user_start and user_end and user_start <= user_end:
+            start_date = pd.to_datetime(user_start)
+            end_date = pd.to_datetime(user_end)
 
         ohlc = get_combined_index_data("Nifty", start_date, end_date)
         high = ohlc['High'].max()
@@ -2266,21 +2315,29 @@ elif filter_mode == "Range":
             sp_levels.append(sp)
             current = sp
 
-        st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-        df_monthly = generate_stacked_levels(high, low, sp_levels)
-        st.dataframe(df_monthly.style.format(precision=2))
+        if len(sp_levels) >= 2:
+            st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+            df_monthly = generate_custom_levels(high, low, sp_levels)
+
+        else:
+            st.warning("Not enough SP levels to calculate for Monthly Range.")
     else:
-        st.info("No Panchak range found for current month.")
+        st.info("No Panchak range found in current month.")
 
     # === FORTNIGHTLY RANGE ===
     st.markdown("## 🌕 Fortnightly Range (Amavasya or Poornima)")
     moon_df = load_moon_data()
     moon_df = moon_df.sort_values("Date")
+    today = pd.Timestamp.today()
+
     recent_moon = moon_df[moon_df['Date'] <= today].iloc[-1]
     next_moon = moon_df[moon_df['Date'] > recent_moon['Date']].iloc[0]
-
     start_date = recent_moon['Date']
     end_date = next_moon['Date']
+
+    if user_start and user_end and user_start <= user_end:
+        start_date = pd.to_datetime(user_start)
+        end_date = pd.to_datetime(user_end)
 
     ohlc = get_combined_index_data("Nifty", start_date, end_date)
     high = ohlc['High'].max()
@@ -2296,33 +2353,73 @@ elif filter_mode == "Range":
         sp_levels.append(sp)
         current = sp
 
-    st.markdown(f"**Amavasya/Poornima Period:** {start_date.date()} to {end_date.date()}")
-    st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-    df_fortnight = generate_stacked_levels(high, low, sp_levels)
-    st.dataframe(df_fortnight.style.format(precision=2))
+    if len(sp_levels) >= 2:
+        st.markdown(f"**Period:** {start_date.date()} to {end_date.date()}")
+        st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+        df_fortnight = generate_custom_levels(high, low, sp_levels)
+
+    else:
+        st.warning("Not enough SP levels for Fortnightly Range.")
 
     # === WEEKLY RANGE ===
-    st.markdown("## 📅 Weekly Range (Monday to Today)")
-    most_recent_monday = today - pd.Timedelta(days=today.weekday())
+    st.markdown("## 📅 Weekly Range (Based on Monday Only)")
+    today = pd.Timestamp.today()
+    # Create list of past Mondays (last 12 weeks)
+    mondays = [today - pd.Timedelta(days=today.weekday() + 7*i) for i in range(12)]
+    mondays = sorted([d.date() for d in mondays], reverse=True)
 
-    monday_date = today - pd.Timedelta(days=today.weekday())
-    ohlc = get_combined_index_data("Nifty", monday_date, monday_date + pd.Timedelta(days=1))
-    high = ohlc['High'].iloc[0]
-    low = ohlc['Low'].iloc[0]
-    range_val = round(high - low, 2)
+    selected_monday = st.selectbox("Select Monday:", mondays)
+    monday_date = pd.to_datetime(selected_monday)
 
-    sp_levels = []
-    current = range_val
-    max_sp_levels = 10  # hard limit to prevent infinite loop
+    start_date = monday_date
+    end_date = monday_date + pd.Timedelta(days=1)
 
-    while len(sp_levels) < max_sp_levels:
-        sp = round(current / 2, 2)
-        if sp < 10:
-            break
-        sp_levels.append(sp)
-        current = sp
+    if user_start and user_end and user_start <= user_end:
+        start_date = pd.to_datetime(user_start)
+        end_date = pd.to_datetime(user_end)
 
-    st.markdown(f"**This Week:** {start_date.date()} to {end_date.date()}")
-    st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-    df_weekly = generate_stacked_levels(high, low, sp_levels)
-    st.dataframe(df_weekly.style.format(precision=2))
+    ohlc = get_combined_index_data("Nifty", start_date, end_date)
+
+    # Group/aggregate Monday OHLC
+    ohlc_day = ohlc.groupby(ohlc.index.date).agg({'High': 'max', 'Low': 'min'})
+    monday_only = monday_date.date()
+
+    if monday_only not in ohlc_day.index:
+        st.warning(f"No data for Monday: {monday_only}")
+    else:
+        row = ohlc_day.loc[monday_only]
+        high = row['High']
+        low = row['Low']
+        range_val = round(high - low, 2)
+
+        sp_levels = []
+        current = range_val
+        while True:
+            sp = round(current / 2, 2)
+            if sp < 10:
+                break
+            sp_levels.append(sp)
+            current = sp
+
+        if len(sp_levels) >= 2:
+            st.markdown(f"**Monday Date:** {monday_date.date()}")
+            st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+            df_weekly = generate_custom_levels(high, low, sp_levels)
+
+        else:
+            st.warning("Not enough SP levels for Weekly Range.")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("### 🗓️ Monthly")
+        st.dataframe(df_monthly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+
+    with col2:
+        st.markdown("### 🌕 Fortnightly")
+        st.dataframe(df_fortnight.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+
+    with col3:
+        st.markdown("### 📅 Weekly")
+        st.dataframe(df_weekly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+        
