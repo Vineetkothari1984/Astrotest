@@ -120,6 +120,38 @@ custom_css = """
 """
 st.markdown(custom_css, unsafe_allow_html=True)
 
+def render_scrollable_table_with_arrow(df):
+    html_rows = []
+    for label, row in df.iterrows():
+        is_arrow = row.get("→", "") == "◀️"
+        row_id = ' id="match"' if is_arrow else ''
+        level_val = row["Level"]
+        arrow_val = row["→"]
+        html_rows.append(f"<tr{row_id}><td>{arrow_val}</td><td>{label}</td><td>{level_val}</td></tr>")
+
+    html_table = f"""
+    <div class="scroll-table" id="scroll-container" style="max-height: 500px; overflow-y: auto;">
+        <table>
+            <thead><tr><th></th><th>Label</th><th>Level</th></tr></thead>
+            <tbody>
+                {''.join(html_rows)}
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        setTimeout(function() {{
+            var matchRow = document.getElementById("match");
+            if (matchRow) {{
+                matchRow.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            }}
+        }}, 300);
+    </script>
+    """
+
+    st.markdown(html_table, unsafe_allow_html=True)
+
+
 # Load stock data
 @st.cache_data
 def load_stock_data():
@@ -133,15 +165,16 @@ def load_stock_data():
 
 
 def highlight_range_levels(row):
-    label = str(row["Label"]).lower()
+    label = str(row.name).lower()  # Access label from the index
     if "high" in label and "sp" not in label:
-        return ['background-color: #ccffcc'] * len(row)  # green
+        return ['background-color: #87bd74'] * len(row)  # green
     elif "low" in label and "sp" not in label:
-        return ['background-color: #ffcccc'] * len(row)  # red
+        return ['background-color: #e7191f'] * len(row)  # red
     elif "midpoint" in label or (label.startswith("mp") and "+" not in label and "-" not in label):
-        return ['background-color: #ffffcc'] * len(row)  # yellow
+        return ['background-color: #fff858'] * len(row)  # yellow
     else:
-        return ['background-color: #eeeeee'] * len(row)  # gray
+        return ['background-color: #d9d9d9'] * len(row)  # gray
+
 
 
 @st.cache_data(ttl=3600)
@@ -2221,7 +2254,7 @@ elif filter_mode == "Mercury Combust":
 elif filter_mode == "Range":
     st.subheader("📊 Range Levels (Nifty)")
 
-    def generate_custom_levels(high, low, sp_levels, levels_up=2, levels_down=2):
+    def generate_custom_levels(high, low, sp_levels, levels_up=5, levels_down=5, current_price=None):
         sp1 = sp_levels[0]
         range_val = round(high - low, 2)
         levels_output = []
@@ -2271,20 +2304,41 @@ elif filter_mode == "Range":
             for i in range(1, len(sp_levels)):
                 levels_output.append((f"mp{level_id} + sp{i+1}", round(current_low + sp_levels[i], 2)))
             levels_output.append((f"Low {level_id}", current_low))
+    
+        df = pd.DataFrame(levels_output, columns=["Label", "Level"]).set_index("Label")
 
-        return pd.DataFrame(levels_output, columns=["Label", "Level"])
+        # Separate numeric and non-numeric
+        df_numeric = df[pd.to_numeric(df['Level'], errors='coerce').notna()].copy()
+        df_non_numeric = df[pd.to_numeric(df['Level'], errors='coerce').isna()].copy()
 
+        # Sort numeric rows
+        df_numeric_sorted = df_numeric.sort_values(by="Level", ascending=False)
 
-    # === INPUT BLOCK ===
-    st.markdown("### 📅 Optional: Choose Custom Date Range")
-    user_start = st.date_input("Start Date (override)", value=None, key="range_start")
-    user_end = st.date_input("End Date (override)", value=None, key="range_end")
+        df_numeric_sorted['RowID'] = ""
+        # ➡️ Add arrow for the closest level to current_price
+        if current_price is not None:
+            diffs = (df_numeric_sorted['Level'] - current_price).abs()
+            closest_label = diffs.idxmin()
+            df_numeric_sorted["→"] = ""
+            df_numeric_sorted.loc[closest_label, "→"] = "◀️"
+        else:
+            df_numeric_sorted["→"] = ""
+
+        # Add arrow column to non-numeric rows too (blank)
+        df_non_numeric["→"] = ""
+
+        # Combine back
+        df_sorted = pd.concat([df_non_numeric, df_numeric_sorted])
+
+        return df_sorted
+
 
     # === MONTHLY RANGE ===
-    st.markdown("## 🗓️ Monthly Range")
+    st.markdown("## 🗓️ Monthly")
     today = pd.Timestamp.today()
     first_of_month = today.replace(day=1)
     panchak_df = load_panchak_data()
+    
 
     recent_panchak = panchak_df[
         (panchak_df['Start Date'] >= first_of_month) &
@@ -2296,12 +2350,8 @@ elif filter_mode == "Range":
         start_date = row['Start Date']
         end_date = row['End Date']
 
-        # Override if user provides dates
-        if user_start and user_end and user_start <= user_end:
-            start_date = pd.to_datetime(user_start)
-            end_date = pd.to_datetime(user_end)
-
         ohlc = get_combined_index_data("Nifty", start_date, end_date)
+        eod_close = ohlc['Close'].dropna().iloc[-1]
         high = ohlc['High'].max()
         low = ohlc['Low'].min()
         range_val = round(high - low, 2)
@@ -2317,7 +2367,7 @@ elif filter_mode == "Range":
 
         if len(sp_levels) >= 2:
             st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-            df_monthly = generate_custom_levels(high, low, sp_levels)
+            df_monthly = generate_custom_levels(high, low, sp_levels, current_price=eod_close)
 
         else:
             st.warning("Not enough SP levels to calculate for Monthly Range.")
@@ -2325,7 +2375,7 @@ elif filter_mode == "Range":
         st.info("No Panchak range found in current month.")
 
     # === FORTNIGHTLY RANGE ===
-    st.markdown("## 🌕 Fortnightly Range (Amavasya or Poornima)")
+    st.markdown("## 🌕 Fortnightly")
     moon_df = load_moon_data()
     moon_df = moon_df.sort_values("Date")
     today = pd.Timestamp.today()
@@ -2335,11 +2385,8 @@ elif filter_mode == "Range":
     start_date = recent_moon['Date']
     end_date = next_moon['Date']
 
-    if user_start and user_end and user_start <= user_end:
-        start_date = pd.to_datetime(user_start)
-        end_date = pd.to_datetime(user_end)
-
     ohlc = get_combined_index_data("Nifty", start_date, end_date)
+    eod_close = ohlc['Close'].dropna().iloc[-1]
     high = ohlc['High'].max()
     low = ohlc['Low'].min()
     range_val = round(high - low, 2)
@@ -2356,13 +2403,13 @@ elif filter_mode == "Range":
     if len(sp_levels) >= 2:
         st.markdown(f"**Period:** {start_date.date()} to {end_date.date()}")
         st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-        df_fortnight = generate_custom_levels(high, low, sp_levels)
+        df_fortnight = generate_custom_levels(high, low, sp_levels, current_price=eod_close)
 
     else:
         st.warning("Not enough SP levels for Fortnightly Range.")
 
     # === WEEKLY RANGE ===
-    st.markdown("## 📅 Weekly Range (Based on Monday Only)")
+    st.markdown("## 📅 Weekly")
     today = pd.Timestamp.today()
     # Create list of past Mondays (last 12 weeks)
     mondays = [today - pd.Timedelta(days=today.weekday() + 7*i) for i in range(12)]
@@ -2374,11 +2421,9 @@ elif filter_mode == "Range":
     start_date = monday_date
     end_date = monday_date + pd.Timedelta(days=1)
 
-    if user_start and user_end and user_start <= user_end:
-        start_date = pd.to_datetime(user_start)
-        end_date = pd.to_datetime(user_end)
-
     ohlc = get_combined_index_data("Nifty", start_date, end_date)
+    eod_close = ohlc['Close'].dropna().iloc[-1]
+
 
     # Group/aggregate Monday OHLC
     ohlc_day = ohlc.groupby(ohlc.index.date).agg({'High': 'max', 'Low': 'min'})
@@ -2404,7 +2449,7 @@ elif filter_mode == "Range":
         if len(sp_levels) >= 2:
             st.markdown(f"**Monday Date:** {monday_date.date()}")
             st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-            df_weekly = generate_custom_levels(high, low, sp_levels)
+            df_weekly = generate_custom_levels(high, low, sp_levels, current_price=eod_close)
 
         else:
             st.warning("Not enough SP levels for Weekly Range.")
@@ -2413,13 +2458,21 @@ elif filter_mode == "Range":
 
     with col1:
         st.markdown("### 🗓️ Monthly")
-        st.dataframe(df_monthly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+        styled_df1 = df_monthly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2)
+        html_table = styled_df1.to_html()
+        st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
 
     with col2:
         st.markdown("### 🌕 Fortnightly")
-        st.dataframe(df_fortnight.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+        styled_df2 = df_fortnight.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2)
+        html_table = styled_df2.to_html()
+        st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
+
 
     with col3:
         st.markdown("### 📅 Weekly")
-        st.dataframe(df_weekly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2))
+        styled_df3 = df_weekly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2)
+        html_table = styled_df3.to_html()
+        st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
+
         
