@@ -2426,7 +2426,10 @@ elif filter_mode == "Range":
 
 
     # Group/aggregate Monday OHLC
-    ohlc_day = ohlc.groupby(ohlc.index.date).agg({'High': 'max', 'Low': 'min'})
+    ohlc_day = ohlc.copy()
+    ohlc_day['Date'] = ohlc_day.index.normalize()  # ensures datetime format
+    ohlc_day = ohlc_day.groupby('Date').agg({'High': 'max', 'Low': 'min'})
+
     monday_only = monday_date.date()
 
     if monday_only not in ohlc_day.index:
