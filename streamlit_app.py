@@ -2422,6 +2422,7 @@ elif filter_mode == "Range":
     end_date = monday_date + pd.Timedelta(days=1)
 
     ohlc = get_combined_index_data("Nifty", start_date, end_date)
+    ohlc.index = pd.to_datetime(ohlc.index, errors='coerce')
     eod_close = ohlc['Close'].dropna().iloc[-1]
 
 
