@@ -151,15 +151,19 @@ def render_scrollable_table_with_arrow(df):
 
     st.markdown(html_table, unsafe_allow_html=True)
 
-
-# Load stock data
 @st.cache_data
 def load_stock_data():
     query = "SELECT * FROM companies"
     df = pd.read_sql(query, engine)
-    for col in ["nse_listing_date", "bse_listing_date", "date_of_incorporation"]:
+
+    # These are case-sensitive and must exactly match your DB column names
+    date_cols = ["NSE LISTING DATE", "BSE LISTING DATE", "DATE OF INCORPORATION"]
+
+    for col in date_cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
+            df[col] = pd.to_datetime(df[col], errors='coerce')  # convert only if column exists
+        else:
+            st.warning(f"Column '{col}' not found in stock data!")
 
     return df
 
@@ -556,7 +560,8 @@ filter_mode = st.sidebar.radio(
         "Mercury Combust",
         "Sun Number Dates",
         "Panchak",
-        "Range"])
+        "Range",
+        "Daily Report"])
 
 if filter_mode == "Filter by Sector/Symbol":
     # === Sector Filter ===
@@ -2307,6 +2312,10 @@ elif filter_mode == "Range":
     
         df = pd.DataFrame(levels_output, columns=["Label", "Level"]).set_index("Label")
 
+        # Keep only numeric level rows
+        df = df[pd.to_numeric(df['Level'], errors='coerce').notna()]
+
+
         # Separate numeric and non-numeric
         df_numeric = df[pd.to_numeric(df['Level'], errors='coerce').notna()].copy()
         df_non_numeric = df[pd.to_numeric(df['Level'], errors='coerce').isna()].copy()
@@ -2314,13 +2323,14 @@ elif filter_mode == "Range":
         # Sort numeric rows
         df_numeric_sorted = df_numeric.sort_values(by="Level", ascending=False)
 
-        df_numeric_sorted['RowID'] = ""
+        
         # ➡️ Add arrow for the closest level to current_price
         if current_price is not None:
             diffs = (df_numeric_sorted['Level'] - current_price).abs()
             closest_label = diffs.idxmin()
             df_numeric_sorted["→"] = ""
             df_numeric_sorted.loc[closest_label, "→"] = "◀️"
+            
         else:
             df_numeric_sorted["→"] = ""
 
@@ -2422,15 +2432,11 @@ elif filter_mode == "Range":
     end_date = monday_date + pd.Timedelta(days=1)
 
     ohlc = get_combined_index_data("Nifty", start_date, end_date)
-    ohlc.index = pd.to_datetime(ohlc.index, errors='coerce')
     eod_close = ohlc['Close'].dropna().iloc[-1]
 
 
     # Group/aggregate Monday OHLC
-    ohlc_day = ohlc.copy()
-    ohlc_day['Date'] = ohlc_day.index.normalize()  # ensures datetime format
-    ohlc_day = ohlc_day.groupby('Date').agg({'High': 'max', 'Low': 'min'})
-
+    ohlc_day = ohlc.groupby(ohlc.index.date).agg({'High': 'max', 'Low': 'min'})
     monday_only = monday_date.date()
 
     if monday_only not in ohlc_day.index:
@@ -2479,4 +2485,50 @@ elif filter_mode == "Range":
         html_table = styled_df3.to_html()
         st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
 
-        
+elif filter_mode == "Daily Report":
+    st.markdown("## 📆 Daily Numerology Report")
+
+    numerology_df = load_numerology_data()
+    numerology_df['date'] = pd.to_datetime(numerology_df['date'])
+
+    today = pd.Timestamp.today().normalize()
+    selected_date = st.date_input("Select Date", value=today)
+    row = numerology_df[numerology_df['date'] == pd.to_datetime(selected_date)]
+
+    if row.empty:
+        st.warning("No numerology data available for this date.")
+        st.stop()
+
+    row = row.iloc[0]
+
+    bn = row['BN']
+    dn_formatted = row['DN (Formatted)']
+    sn = row['SN']
+    hp = row['HP']
+    dayn = row['Day Number']
+
+    html = f"""
+    <div style="font-family:'Segoe UI', sans-serif; border:1px solid #ccc; box-shadow: 0px 4px 15px rgba(0,0,0,0.1); border-radius:10px; padding:40px; margin:auto; max-width:750px; background:#fff;">
+        <h2 style="text-align:center; margin-bottom:10px;">📄 Daily Report</h2>
+        <h4 style="text-align:center; color:#666; margin-top:0;">Date: {selected_date.strftime('%Y-%m-%d')}</h4>
+        <hr style="margin:20px 0;">
+        <p> ➤ Birth Number (BN): <span style="color:#000;">{bn}</span></p>
+        <p> ➤ DN - SN: <span style="color:#000;">{dn_formatted} - {sn}</span></p>
+        <p> ➤ Sun Number (SN): <span style="color:#000;">{sn}</span></p>
+        <p> ➤ Hidden Personality (HP): <span style="color:#000;">{hp}</span></p>
+        <p> ➤ BN - DN: <span style="color:#000;">{bn} - {dn_formatted}</span></p>
+        <hr style="margin:30px 0;">
+        <h6>Day Number Comparisons: <span style="color:#000;">{dayn}</span></h6>
+        <ul style="font-size:14px; padding-left:25px;">
+            <li><strong>BN - Day Number:</strong> {bn} - {dayn}</li>
+            <li><strong>DN - Day Number:</strong> {dn_formatted} - {dayn}</li>
+            <li><strong>SN - Day Number:</strong> {sn} - {dayn}</li>
+            <li><strong>HP - Day Number:</strong> {hp} - {dayn}</li>
+            <li><strong>HP - SN:</strong> {hp} - {sn}</li>
+        </ul>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+
