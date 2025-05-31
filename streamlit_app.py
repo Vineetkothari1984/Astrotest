@@ -338,21 +338,34 @@ def get_combined_index_data(index_name, start_date, end_date):
             # ✅ Drop duplicates
             append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
 
-            # ✅ Check if rows already exist in DB and exclude them
-            existing_dates = pd.read_sql(
-                'SELECT "Date" FROM ohlc_index WHERE index_name = %s AND "Date" IN %s',
-                engine,
-                params=(index_name, tuple(append_df["Date"].dt.date.unique()))
-            )["Date"].dt.normalize()
+            # Normalize dates for consistent comparison
+            append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+            unique_dates = append_df["Date"].unique()
 
-            append_df = append_df[~append_df["Date"].isin(existing_dates)]
+            # If no dates, skip the rest
+            if len(unique_dates) > 0:
+                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
+    
+                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
+                query = f'''
+                        SELECT "Date"
+                        FROM ohlc_index
+                        WHERE index_name = %s AND "Date" IN {placeholder}
+                        '''
 
-            # ✅ Final safety check
+                params = (index_name, *date_tuple)
+                existing_dates = pd.read_sql(query, engine, params=params)["Date"].dt.normalize()
+
+                # Drop duplicates already in DB
+                append_df = append_df[~append_df["Date"].isin(existing_dates)]
+
+            # Final write if anything remains
             if not append_df.empty:
                 append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
 
-    # Step 3: Return full data aligned to date range
-    return df.reindex(full_range)
+
+            # Step 3: Return full data aligned to date range
+            return df.reindex(full_range)
 
 def plot_candlestick_chart(stock_data, vertical_lines=None):
 
@@ -2520,10 +2533,10 @@ elif filter_mode == "Daily Report":
         <hr style="margin:30px 0;">
         <h6>Day Number Comparisons: <span style="color:#000;">{dayn}</span></h6>
         <ul style="font-size:14px; padding-left:25px;">
-            <li><strong>BN - Day Number:</strong> {bn} - {dayn}</li>
-            <li><strong>DN - Day Number:</strong> {dn_formatted} - {dayn}</li>
-            <li><strong>SN - Day Number:</strong> {sn} - {dayn}</li>
-            <li><strong>HP - Day Number:</strong> {hp} - {dayn}</li>
+            <li><strong>Day Number - BN:</strong> {dayn} - {bn}</li>
+            <li><strong>Day Number - DN:</strong> {dayn} - {dn_formatted}</li>
+            <li><strong>Day Number - SN:</strong> {dayn} -  {sn}</li>
+            <li><strong>Day Number - HP:</strong> {dayn} - {hp}</li>
             <li><strong>HP - SN:</strong> {hp} - {sn}</li>
         </ul>
     </div>
