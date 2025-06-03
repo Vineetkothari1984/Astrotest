@@ -20,6 +20,7 @@ def hash_password(password):
 # Format: username: hashed_password
 USER_CREDENTIALS = {
     "admin": hash_password("admin123"),
+    "transleads": hash_password("leads27"),
     "vin": hash_password("vin69"),
 }
 
@@ -360,7 +361,31 @@ def get_combined_index_data(index_name, start_date, end_date):
 
             # Final write if anything remains
             if not append_df.empty:
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                # Normalize date format to prevent subtle mismatches
+                append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+
+                # Build a tuple of all (Date, index_name) in append_df
+                new_keys = list(zip(append_df["Date"], append_df["index_name"]))
+
+                # Fetch existing keys from DB
+                placeholders = ",".join(["(%s, %s)"] * len(new_keys))
+                flat_params = [item for tup in new_keys for item in tup]
+
+                existing_query = f'''
+                    SELECT "Date", index_name
+                    FROM ohlc_index
+                    WHERE (Date, index_name) IN ({placeholders})
+                '''
+
+                existing_df = pd.read_sql(existing_query, engine, params=flat_params)
+                existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
+
+                # Drop rows already in DB
+                append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
+
+                # Insert remaining rows
+                if not append_df.empty:
+                    append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
 
 
             # Step 3: Return full data aligned to date range
@@ -597,7 +622,11 @@ if filter_mode == "Filter by Sector/Symbol":
     # === Display Company Data ===
     if not company_data.empty:
         st.write("### Company Info")
-        display_cols = company_data.drop(columns=['Series', 'Company Name', 'ISIN Code', 'IPO TIMING ON NSE'], errors='ignore')
+        display_cols = company_data.drop(columns=['Series', 'Pythagoras Eqn Symbol' , 'Chaldean Eqn Symbol', 'Chaldean Eqn Company name without Ltd',
+                                                'Pythagoras Eqn Company name without Ltd', 'Pythagoras Eqn Company name with Ltd',
+                                                'Chaldean Eqn Company name with Ltd' ,'Company Name', 'Pythagoras Eqn ISIN without IN',
+                                                'Chaldean Eqn ISIN without IN', 'Pythagoras Eqn ISIN with IN', 'Chaldean Eqn ISIN with IN', 
+                                                'ISIN Code', 'IPO TIMING ON NSE'], errors='ignore')
         for col in ['NSE LISTING DATE', 'BSE LISTING DATE', 'DATE OF INCORPORATION']:
             if col in display_cols.columns:
                 display_cols[col] = display_cols[col].dt.strftime('%Y-%m-%d')
