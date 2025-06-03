@@ -294,13 +294,11 @@ def get_stock_data(ticker, start_date, end_date):
 
 def get_combined_index_data(index_name, start_date, end_date):
     import yfinance as yf
-    import pandas as pd
-    from sqlalchemy.exc import IntegrityError
-
-    ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
     full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
 
-    # Step 1: Fetch existing data
+    ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
+
+    # Step 1: Fetch from PostgreSQL
     query = '''
         SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
         FROM ohlc_index
@@ -308,60 +306,90 @@ def get_combined_index_data(index_name, start_date, end_date):
         ORDER BY "Date"
     '''
     df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-    df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
+    df['Date'] = pd.to_datetime(df['Date'])
     df.set_index('Date', inplace=True)
     df = df.sort_index()
 
-    # Step 2: Check missing dates
+    # ✅ Step 2: Aggregate by Date
+    df = df.groupby(df.index).agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+        "Vol(in M)": "sum"
+    })
+
+    # Step 2: Check for missing dates and fetch from Yahoo
     missing_dates = full_range.difference(df.index)
     if not missing_dates.empty:
         fetch_start = missing_dates.min()
         fetch_end = end_date + pd.Timedelta(days=1)
 
-        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index = False)
-
-        # Flatten MultiIndex if needed
-        if isinstance(yf_data.columns, pd.MultiIndex):
-            yf_data.columns = [col[0] for col in yf_data.columns]
-
+        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
         if not yf_data.empty:
             append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
             append_df.reset_index(inplace=True)
-            append_df.rename(columns={'Date': 'Date', 'Volume': 'Vol(in M)'}, inplace=True)
-            append_df['index_name'] = index_name
-            append_df['Vol(in M)'] = append_df['Vol(in M)'] / 1_000_000
-            append_df['Date'] = pd.to_datetime(append_df['Date']).dt.normalize()
+            append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+            append_df["index_name"] = index_name
 
-            # Step 3: Remove already existing rows
-            existing_query = '''
-                SELECT "Date" FROM ohlc_index
-                WHERE index_name = %s
-            '''
-            existing_df = pd.read_sql(existing_query, engine, params=(index_name,))
-            existing_df["Date"] = pd.to_datetime(existing_df["Date"]).dt.normalize()
-            existing_keys = set(zip(existing_df["Date"], [index_name]*len(existing_df)))
+            # ✅ Convert Volume to millions
+            append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
 
-            # Drop duplicates
-            append_df = append_df[~append_df.apply(
-                lambda row: (row["Date"], row["index_name"]) in existing_keys, axis=1)]
+            # ✅ Drop duplicates
+            append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
 
-            # Step 4: Append safely
+            # Normalize dates for consistent comparison
+            append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+            unique_dates = append_df["Date"].unique()
+
+            # If no dates, skip the rest
+            if len(unique_dates) > 0:
+                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
+    
+                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
+                query = f'''
+                        SELECT "Date"
+                        FROM ohlc_index
+                        WHERE index_name = %s AND "Date" IN {placeholder}
+                        '''
+
+                params = (index_name, *date_tuple)
+                existing_dates = pd.read_sql(query, engine, params=params)["Date"].dt.normalize()
+
+                # Drop duplicates already in DB
+                append_df = append_df[~append_df["Date"].isin(existing_dates)]
+
+            # Final write if anything remains
             if not append_df.empty:
-                try:
-                    append_df.to_sql("ohlc_index", engine, if_exists="append", index=False, method="multi")
-                    print(f"✅ Appended {len(append_df)} rows for {index_name}")
-                except IntegrityError as e:
-                    if "duplicate key value violates unique constraint" in str(e):
-                        print(f"⚠️ Some records already exist for {index_name}. Skipping duplicates.")
-                    else:
-                        raise  # unexpected error — re-raise it
+                # Normalize date format to prevent subtle mismatches
+                append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
 
-    # Step 5: Return final clean data
-    df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-    df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
-    df.set_index('Date', inplace=True)
-    df = df.sort_index()
-    return df.reindex(full_range)
+                # Build a tuple of all (Date, index_name) in append_df
+                new_keys = list(zip(append_df["Date"], append_df["index_name"]))
+
+                # Fetch existing keys from DB
+                placeholders = ",".join(["(%s, %s)"] * len(new_keys))
+                flat_params = [item for tup in new_keys for item in tup]
+
+                existing_query = f'''
+                    SELECT "Date", index_name
+                    FROM ohlc_index
+                    WHERE (Date, index_name) IN ({placeholders})
+                '''
+
+                existing_df = pd.read_sql(existing_query, engine, params=flat_params)
+                existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
+
+                # Drop rows already in DB
+                append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
+
+                # Insert remaining rows
+                if not append_df.empty:
+                    append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+
+
+            # Step 3: Return full data aligned to date range
+            return df.reindex(full_range)
 
 def plot_candlestick_chart(stock_data, vertical_lines=None):
 
@@ -1474,7 +1502,7 @@ elif filter_mode == "Equinox":
         missing_dates = full_range.difference(df.index)
         if not missing_dates.empty:
             import yfinance as yf
-            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False)
+            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index = False)
             if not yf_data.empty:
                 append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
                 append_df.reset_index(inplace=True)
