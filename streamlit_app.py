@@ -7,6 +7,8 @@ from datetime import datetime
 from datetime import timedelta
 from sqlalchemy import create_engine
 import base64
+from sqlalchemy import Table, MetaData
+from sqlalchemy.dialects.postgresql import insert
 
 import hashlib
 
@@ -118,6 +120,22 @@ custom_css = """
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
+
+
+def insert_ignore_duplicates(df, engine, table_name="ohlc_index", unique_keys=["Date", "index_name"]):
+    if df.empty:
+        return
+
+    metadata = MetaData()
+    metadata.reflect(bind=engine)
+    table = metadata.tables[table_name]
+
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            stmt = insert(table).values(**row.to_dict())
+            stmt = stmt.on_conflict_do_nothing(index_elements=unique_keys)
+            conn.execute(stmt)
+
 
 def render_scrollable_table_with_arrow(df):
     html_rows = []
@@ -1342,6 +1360,8 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
                 append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
                 # Drop duplicates before inserting (if any)
                 append_df.drop_duplicates(subset=["Date", "index_name"], keep="last", inplace=True)
+
+                insert_ignore_duplicates(append_df, engine)
 
                 # Convert volume to millions if it's from Yahoo
                 append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
