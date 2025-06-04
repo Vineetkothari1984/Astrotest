@@ -1242,25 +1242,25 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
     index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
 
     def get_index_ohlc(index_name, start_date, end_date):
-    """
-    Load only existing OHLC data from database.
-    No fetching from Yahoo Finance and no DB inserts.
-    """
-    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+        """
+        Load only existing OHLC data from database.
+        No fetching from Yahoo Finance and no DB inserts.
+        """
+        full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
 
-    query = '''
-        SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-        FROM ohlc_index
-        WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-        ORDER BY "Date"
-    '''
-    df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-    df['Date'] = pd.to_datetime(df['Date'], utc=True).dt.normalize()
-    df.set_index('Date', inplace=True)
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep='last')]
+        query = '''
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        '''
+        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+        df['Date'] = pd.to_datetime(df['Date'], utc=True).dt.normalize()
+        df.set_index('Date', inplace=True)
+        df = df.sort_index()
+        df = df[~df.index.duplicated(keep='last')]
 
-    return df.reindex(full_range)
+        return df.reindex(full_range)
 
 
     # Load numerology
