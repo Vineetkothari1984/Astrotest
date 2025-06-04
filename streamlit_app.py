@@ -1241,46 +1241,27 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
     symbol = "^NSEI" if index_choice == "Nifty 50" else "^NSEBANK"
     index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
 
-    def get_index_ohlc(index_name, ticker, start_date, end_date):
-        full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+    def get_index_ohlc(index_name, start_date, end_date):
+    """
+    Load only existing OHLC data from database.
+    No fetching from Yahoo Finance and no DB inserts.
+    """
+    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
 
-        # Try to get existing data from DB
-        query = '''
-            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-            FROM ohlc_index
-            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-            ORDER BY "Date"
-        '''
-        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        df = df.sort_index()
-        df = df[~df.index.duplicated(keep='last')]
+    query = '''
+        SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+        FROM ohlc_index
+        WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+        ORDER BY "Date"
+    '''
+    df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+    df['Date'] = pd.to_datetime(df['Date'], utc=True).dt.normalize()
+    df.set_index('Date', inplace=True)
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep='last')]
 
-        # Fill missing from yFinance
-        missing_dates = full_range.difference(df.index)
-        if not missing_dates.empty:
-            fetch_start = missing_dates.min()
-            yf_data = yf.download(ticker, start=fetch_start, end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index=False)
-            if not yf_data.empty:
-                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                append_df.reset_index(inplace=True)
-                append_df['index_name'] = index_name
-                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-                # Drop duplicates before inserting (if any)
-                append_df.drop_duplicates(subset=["Date", "index_name"], keep="last", inplace=True)
+    return df.reindex(full_range)
 
-                # Convert volume to millions if it's from Yahoo
-                append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
-
-                # Append to database
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False, method="multi")
-
-                append_df.set_index('Date', inplace=True)
-                df = pd.concat([df, append_df])
-                df = df[~df.index.duplicated(keep='last')]
-
-        return df.reindex(full_range)
 
     # Load numerology
     numerology_aligned = numerology_df.copy()
@@ -1299,7 +1280,7 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
         st.error("End Date must be after Start Date")
         st.stop()
 
-    ohlc_data = get_index_ohlc(index_name, symbol, start_date, end_date)
+    ohlc_data = get_index_ohlc(index_name, start_date, end_date)
     ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
     ohlc_data['Close %'] = ohlc_data['Close'].pct_change() * 100
     ohlc_data['Volatility %'] = ohlc_data['Volatility %'].round(2)
