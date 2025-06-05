@@ -5,5 +5,5 @@ datetime
 plotly
 sqlalchemy
 psycopg2-binary
-swisseph
+pyswisseph
 
