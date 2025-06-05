@@ -7,8 +7,6 @@ from datetime import datetime
 from datetime import timedelta
 from sqlalchemy import create_engine
 import base64
-from sqlalchemy import Table, MetaData
-from sqlalchemy.dialects.postgresql import insert
 
 import hashlib
 
@@ -120,22 +118,6 @@ custom_css = """
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
-
-
-def insert_ignore_duplicates(df, engine, table_name="ohlc_index", unique_keys=["Date", "index_name"]):
-    if df.empty:
-        return
-
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
-    table = metadata.tables[table_name]
-
-    with engine.begin() as conn:
-        for _, row in df.iterrows():
-            stmt = insert(table).values(**row.to_dict())
-            stmt = stmt.on_conflict_do_nothing(index_elements=unique_keys)
-            conn.execute(stmt)
-
 
 def render_scrollable_table_with_arrow(df):
     html_rows = []
@@ -611,7 +593,12 @@ filter_mode = st.sidebar.radio(
         "Sun Number Dates",
         "Panchak",
         "Range",
-        "Daily Report"])
+        "Daily Report",
+        "Navamasa",
+        "Planetary Conjunctions",
+        "Planetary Report",
+        "Moon–Mercury Aspects",
+        ])
 
 if filter_mode == "Filter by Sector/Symbol":
     # === Sector Filter ===
@@ -1360,8 +1347,6 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
                 append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
                 # Drop duplicates before inserting (if any)
                 append_df.drop_duplicates(subset=["Date", "index_name"], keep="last", inplace=True)
-
-                insert_ignore_duplicates(append_df, engine)
 
                 # Convert volume to millions if it's from Yahoo
                 append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
@@ -2585,6 +2570,810 @@ elif filter_mode == "Daily Report":
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+
+elif filter_mode == "Navamasa":
+    st.header("🌌 Navamasa (D1 & D9 Planetary Chart)")
+
+    import swisseph as swe
+    import datetime
+    import pandas as pd
+
+    # === Setup Swiss Ephemeris ===
+    swe.set_ephe_path("C:/ephe")  # Replace with actual path
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # === User Input ===
+    birth_dt = st.date_input("Select Date", value=datetime.date.today())
+    birth_time = st.time_input("Select Time", value=datetime.time(9, 0))
+    datetime_obj = datetime.datetime.combine(birth_dt, birth_time)
+
+    timezone_offset = 5.5  # IST
+    latitude = 19.076
+    longitude = 72.8777
+
+    utc_dt = datetime_obj - datetime.timedelta(hours=timezone_offset)
+    jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute / 60)
+
+    # === Constants ===
+    signs = [
+        'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+        'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+    ]
+
+    sign_lords = [
+        'Mars', 'Venus', 'Mercury', 'Moon', 'Sun', 'Mercury',
+        'Venus', 'Mars', 'Jupiter', 'Saturn', 'Saturn', 'Jupiter'
+    ]
+
+    nakshatras = [
+        "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu",
+        "Pushya", "Ashlesha", "Magha", "Purva Phalguni", "Uttara Phalguni", "Hasta",
+        "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha",
+        "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
+        "Uttara Bhadrapada", "Revati"
+    ]
+
+    planets = {
+        "Sun": swe.SUN,
+        "Moon": swe.MOON,
+        "Mars": swe.MARS,
+        "Mercury": swe.MERCURY,
+        "Jupiter": swe.JUPITER,
+        "Venus": swe.VENUS,
+        "Saturn": swe.SATURN,
+        "Rahu": swe.TRUE_NODE,
+        "Ketu": swe.TRUE_NODE,
+        "Uranus": swe.URANUS,
+        "Neptune": swe.NEPTUNE,
+        "Pluto": swe.PLUTO
+    }
+
+    custom_d1_map = {sign: i+1 for i, sign in enumerate(signs)}
+    custom_d9_map = {
+        "Aries": 1, "Taurus": 2, "Gemini": 3, "Leo": 4, "Cancer": 5, "Virgo": 6,
+        "Libra": 7, "Scorpio": 8, "Sagittarius": 9, "Capricorn": 10, "Aquarius": 11, "Pisces": 12
+    }
+
+    # === Helper: Navamsa D9 Sign Logic ===
+    def get_d9_sign_index(longitude_deg):
+        sign_index = int(longitude_deg // 30)
+        pos_in_sign = longitude_deg % 30
+        navamsa_index = int(pos_in_sign // (30 / 9))
+        if sign_index in [0, 3, 6, 9]: start = sign_index
+        elif sign_index in [1, 4, 7, 10]: start = (sign_index + 8) % 12
+        else: start = (sign_index + 4) % 12
+        return (start + navamsa_index) % 12
+
+    # === Planetary Calculations ===
+    rows = []
+    longitudes = {}
+    flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+    navamsa_size = 30 / 9
+
+    for name, pid in planets.items():
+        lon = swe.calc_ut(jd, pid, flag)[0][0]
+        if name == "Ketu":
+            lon = (swe.calc_ut(jd, swe.TRUE_NODE, flag)[0][0] + 180) % 360
+
+        longitudes[name] = round(lon, 2)
+
+        sign_index = int(lon // 30)
+        rashi = signs[sign_index]
+        d1_sign_number = custom_d1_map[rashi]
+        rashi_lord = sign_lords[sign_index]
+
+        pos_in_sign = lon % 30
+        deg_in_sign = f"{int(pos_in_sign)}° {int((pos_in_sign % 1) * 60):02d}'"
+
+        nak_index = int((lon % 360) // (360 / 27))
+        nakshatra = nakshatras[nak_index]
+
+        d9_sign_index = get_d9_sign_index(lon)
+        d9_sign = signs[d9_sign_index]
+        d9_sign_number = custom_d9_map[d9_sign]
+        deg_in_d9_total = (pos_in_sign % navamsa_size) * 9
+        deg_in_d9_sign = f"{int(deg_in_d9_total)}° {int((deg_in_d9_total % 1) * 60):02d}'"
+        d9_long = d9_sign_index * 30 + deg_in_d9_total
+
+        rows.append({
+            "Planet": name,
+            "Longitude (deg)": round(lon, 2),
+            "Sign": rashi,
+            "D1 Sign #": d1_sign_number,
+            "Sign Lord": rashi_lord,
+            "Nakshatra": nakshatra,
+            "Degrees in Sign": deg_in_sign,
+            "Navamsa (D9) Sign": d9_sign,
+            "D9 Sign #": d9_sign_number,
+            "Degrees in D9 Sign": deg_in_d9_sign,
+            "D9 Longitude (deg)": round(d9_long, 2)
+        })
+
+    df = pd.DataFrame(rows)
+
+    # === D1/D9 Degree Difference Tables ===
+    def angular_diff(a, b): return round((b - a) % 360, 2)
+    def create_diff_table(deg_dict): return pd.DataFrame([
+        [angular_diff(deg_dict[p1], deg_dict[p2]) for p2 in deg_dict]
+        for p1 in deg_dict
+    ], index=deg_dict.keys(), columns=deg_dict.keys())
+
+    d1_table = create_diff_table(longitudes)
+    d9_table = create_diff_table({row["Planet"]: row["D9 Longitude (deg)"] for row in rows})
+
+    # === Type Classification (Movable/Fixed/Dual) ===
+    def classify(num):
+        if num in [1, 4, 7, 10]: return "Movable"
+        elif num in [2, 5, 8, 11]: return "Fixed"
+        elif num in [3, 6, 9, 12]: return "Dual"
+        return "Unknown"
+
+    df["D1 Type"] = df["D1 Sign #"].apply(classify)
+    df["D9 Type"] = df["D9 Sign #"].apply(classify)
+
+    def summary(df, col):
+        cats = ["Movable", "Fixed", "Dual"]
+        return pd.DataFrame([{
+            "Category": cat,
+            "Planets": ", ".join(df[df[col] == cat]["Planet"]),
+            "Total": len(df[df[col] == cat])
+        } for cat in cats])
+
+    d1_class = summary(df, "D1 Type")
+    d9_class = summary(df, "D9 Type")
+
+    # === Render All as Styled HTML Tables ===
+    st.markdown("### 🪐 Planetary Positions (D1 + D9)")
+    st.markdown(f'<div class="scroll-table">{df.to_html(index=False)}</div>', unsafe_allow_html=True)
+
+    st.markdown("### 📘 D1 Longitudinal Differences (0–360°)")
+    st.markdown(f'<div class="scroll-table">{d1_table.to_html()}</div>', unsafe_allow_html=True)
+
+    st.markdown("### 📙 D9 Longitudinal Differences (0–360°)")
+    st.markdown(f'<div class="scroll-table">{d9_table.to_html()}</div>', unsafe_allow_html=True)
+
+    st.markdown("### 📊 D1 Sign Type Classification")
+    st.markdown(f'<div class="scroll-table">{d1_class.to_html(index=False)}</div>', unsafe_allow_html=True)
+
+    st.markdown("### 📊 D9 Sign Type Classification")
+    st.markdown(f'<div class="scroll-table">{d9_class.to_html(index=False)}</div>', unsafe_allow_html=True)
+
+elif filter_mode == "Planetary Conjunctions":
+    st.header("🪐 Planetary Conjunctions (±1°) with Nakshatra, Pada & Zodiac")
+
+    import swisseph as swe
+    import datetime
+    import pandas as pd
+    from itertools import combinations
+
+    # Setup
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # Date Range Input
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime.date(2025, 6, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.date(2025, 6, 30))
+
+    # Planet order by speed
+    planet_order = ["Moon", "Mercury", "Venus", "Sun", "Mars",
+                    "Jupiter", "Rahu", "Ketu", "Saturn",
+                    "Uranus", "Neptune", "Pluto"]
+    planet_rank = {planet: i for i, planet in enumerate(planet_order)}
+
+    planets = {
+        "Sun": swe.SUN,
+        "Moon": swe.MOON,
+        "Mars": swe.MARS,
+        "Mercury": swe.MERCURY,
+        "Jupiter": swe.JUPITER,
+        "Venus": swe.VENUS,
+        "Saturn": swe.SATURN,
+        "Rahu": swe.TRUE_NODE,
+        "Ketu": swe.TRUE_NODE,
+        "Uranus": swe.URANUS,
+        "Neptune": swe.NEPTUNE,
+        "Pluto": swe.PLUTO
+    }
+
+    nakshatras = [
+        "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra",
+        "Punarvasu", "Pushya", "Ashlesha", "Magha", "Purva Phalguni",
+        "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha",
+        "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha", "Uttara Ashadha",
+        "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
+        "Uttara Bhadrapada", "Revati"
+    ]
+
+    zodiacs = [
+        "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+        "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+    ]
+
+    def get_nakshatra_and_pada(degree):
+        nak_index = int(degree // (360 / 27))
+        pada = int((degree % (360 / 27)) // 3.3333) + 1
+        return nakshatras[nak_index], pada
+
+    def get_zodiac(degree):
+        return zodiacs[int(degree // 30)]
+
+    def signed_diff(fast_deg, slow_deg):
+        diff = (fast_deg - slow_deg + 360) % 360
+        if diff > 180:
+            diff -= 360
+        return round(diff, 2)
+
+    def get_planet_data(jd, name, pid):
+        flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
+        lon, speed = swe.calc_ut(jd, pid, flag)[0][0:2]
+        if name == "Ketu":
+            lon = (swe.calc_ut(jd, swe.TRUE_NODE, flag)[0][0] + 180) % 360
+            speed = -speed
+        return round(lon, 2), round(speed, 4)
+
+    # Iterate over days
+    current = start_date
+    results = []
+
+    while current <= end_date:
+        jd = swe.julday(current.year, current.month, current.day, 0)
+        planet_data = {}
+
+        for name, pid in planets.items():
+            lon, speed = get_planet_data(jd, name, pid)
+            planet_data[name] = {"deg": lon, "speed": speed}
+
+        for p1, p2 in combinations(planet_data.keys(), 2):
+            r1, r2 = planet_rank.get(p1, 999), planet_rank.get(p2, 999)
+            fast, slow = (p1, p2) if r1 < r2 else (p2, p1)
+
+            d1 = planet_data[fast]["deg"]
+            d2 = planet_data[slow]["deg"]
+            diff = signed_diff(d1, d2)
+
+            if abs(diff) <= 1.0:
+                midpoint = (d1 + d2) / 2 % 360
+                nakshatra, pada = get_nakshatra_and_pada(midpoint)
+                zodiac = get_zodiac(midpoint)
+
+                results.append({
+                    "Date": current.strftime("%Y-%m-%d"),
+                    "Planet 1": f"{fast} ({d1}° / {planet_data[fast]['speed']}°/day)",
+                    "Planet 2": f"{slow} ({d2}° / {planet_data[slow]['speed']}°/day)",
+                    "Degree Difference": diff,
+                    "Nakshatra": nakshatra,
+                    "Pada": pada,
+                    "Zodiac": zodiac,
+                    "Day Type": "Red Day" if diff < 0 else "Green Day"
+                })
+
+        current += datetime.timedelta(days=1)
+
+    df = pd.DataFrame(results)
+
+    if df.empty:
+        st.warning("No conjunctions found within ±1° for the selected date range.")
+    else:
+        st.markdown("### 🔭 Conjunction Report")
+
+        def styled_html_table(df):
+            rows = []
+            for _, row in df.iterrows():
+                bg_color = "#ffe6e6" if row["Day Type"] == "Red Day" else "#e6ffe6"
+                row_html = "<tr style='background-color:{}'>".format(bg_color)
+                for val in row:
+                    row_html += f"<td>{val}</td>"
+                row_html += "</tr>"
+                rows.append(row_html)
+
+            header = "".join([f"<th>{col}</th>" for col in df.columns])
+            html_table = f"""
+            <div class="scroll-table">
+                <table>
+                    <thead><tr>{header}</tr></thead>
+                    <tbody>
+                        {''.join(rows)}
+                    </tbody>
+                </table>
+            </div>
+            """
+            return html_table
+
+        st.markdown(styled_html_table(df), unsafe_allow_html=True)
+
+elif filter_mode == "Planetary Report":
+    st.header("📅 Daily Planetary Summary Report (D1 + D9 + Conjunctions)")
+
+    import swisseph as swe
+    import datetime
+    import pandas as pd
+    from itertools import combinations
+
+    # === Input Range ===
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime.date(2025, 6, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.date(2025, 6, 30))
+
+    # === Swiss Ephemeris Setup ===
+    swe.set_ephe_path("C:/ephe")  # Adjust to your ephemeris‐file path
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+    timezone_offset = 5.5  # IST → UTC offset
+
+    # === Planet Definitions ===
+    planets = {
+        "Sun": swe.SUN,
+        "Moon": swe.MOON,
+        "Mars": swe.MARS,
+        "Mercury": swe.MERCURY,
+        "Jupiter": swe.JUPITER,
+        "Venus": swe.VENUS,
+        "Saturn": swe.SATURN,
+        "Rahu": swe.TRUE_NODE,
+        "Ketu": swe.TRUE_NODE,
+        "Uranus": swe.URANUS,
+        "Neptune": swe.NEPTUNE,
+        "Pluto": swe.PLUTO
+    }
+
+    # === Sign Names & Mappings for D1/D9 ===
+    signs = [
+        'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+        'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
+    ]
+    custom_d1_map = {sign: i + 1 for i, sign in enumerate(signs)}
+    custom_d9_map = {
+        "Aries": 1, "Taurus": 2, "Gemini": 3, "Leo": 4,
+        "Cancer": 5, "Virgo": 6, "Libra": 7, "Scorpio": 8,
+        "Sagittarius": 9, "Capricorn": 10, "Aquarius": 11, "Pisces": 12
+    }
+    sign_types = {
+        "Movable": [1, 4, 7, 10],
+        "Fixed":   [2, 5, 8, 11],
+        "Dual":    [3, 6, 9, 12]
+    }
+
+    # === Planet Speed Order (fastest → slowest) ===
+    planet_order = [
+        "Moon", "Mercury", "Venus", "Sun", "Mars",
+        "Jupiter", "Rahu", "Ketu", "Saturn",
+        "Uranus", "Neptune", "Pluto"
+    ]
+    planet_rank = {planet: i for i, planet in enumerate(planet_order)}
+
+    # === Helper: Compute Navamsa (D9) Sign Index ===
+    def get_d9_sign_index(longitude_deg):
+        sign_index = int(longitude_deg // 30)
+        pos_in_sign = longitude_deg % 30
+        navamsa_index = int(pos_in_sign // (30 / 9))
+        if sign_index in [0, 3, 6, 9]:
+            start = sign_index
+        elif sign_index in [1, 4, 7, 10]:
+            start = (sign_index + 8) % 12
+        else:
+            start = (sign_index + 4) % 12
+        return (start + navamsa_index) % 12
+
+    # === Helper: Classify Sign Number → Movable/Fixed/Dual ===
+    def classify_sign_type(sign_number):
+        if sign_number in sign_types["Movable"]:
+            return "Movable"
+        elif sign_number in sign_types["Fixed"]:
+            return "Fixed"
+        elif sign_number in sign_types["Dual"]:
+            return "Dual"
+        return "Unknown"
+
+    # === Helper: Conjunction Logic (±1°) ===
+    def get_conjunction_day_info(jd):
+        """
+        Returns (day_type, reason). If any two planets are within ±1° on this JD:
+         - day_type = "Red Day" if (fast_lon - slow_lon) < 0,
+                      "Green Day" if > 0.
+         - reason = "<Fast>-<Slow>: <signed_diff>°"
+        Otherwise returns ("-", "").
+        """
+        flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
+
+        # 1) Compute sidereal longitude & speed for each planet at 00:00 UTC
+        planet_data = {}
+        for name, pid in planets.items():
+            lon, speed = swe.calc_ut(jd, pid, flag)[0][0:2]
+            if name == "Ketu":
+                true_node_lon = swe.calc_ut(jd, swe.TRUE_NODE, flag)[0][0]
+                lon = (true_node_lon + 180) % 360
+                speed = -speed
+            planet_data[name] = {"lon": lon, "speed": speed}
+
+        # 2) Check each pair for |difference| ≤ 1°
+        for p1, p2 in combinations(planet_data.keys(), 2):
+            r1 = planet_rank.get(p1, 999)
+            r2 = planet_rank.get(p2, 999)
+            fast, slow = (p1, p2) if r1 < r2 else (p2, p1)
+
+            d1 = planet_data[fast]["lon"]
+            d2 = planet_data[slow]["lon"]
+            diff = (d1 - d2 + 360) % 360
+            if diff > 180:
+                diff -= 360
+            diff = round(diff, 2)
+
+            if abs(diff) <= 1.0:
+                day_type = "Red Day" if diff < 0 else "Green Day"
+                reason = f"{fast}-{slow}: {diff}°"
+                return day_type, reason
+
+        return "-", ""
+
+    # === Helper: Minimal Absolute Circular Difference ===
+    def minimal_abs_diff(a, b):
+        """
+        Given two angles a, b (0–360), return the minimal |a-b| around the circle (0–180).
+        """
+        raw = abs((a - b + 360) % 360)
+        return min(raw, 360 - raw)
+
+    # === Build the Report Rows ===
+    report_rows = []
+    current_date = start_date
+
+    while current_date <= end_date:
+        # 1) JD at 00:00 IST → UTC
+        utc_midnight = datetime.datetime(
+            current_date.year,
+            current_date.month,
+            current_date.day,
+            0, 0
+        ) - datetime.timedelta(hours=timezone_offset)
+        jd = swe.julday(
+            utc_midnight.year,
+            utc_midnight.month,
+            utc_midnight.day,
+            utc_midnight.hour + utc_midnight.minute / 60
+        )
+
+        # 2) Conjunction “Day Type” & “Reason”
+        day_type, reason = get_conjunction_day_info(jd)
+
+        # 3) Collect D1 & D9 classification and longitudes for all planets
+        d1_types = []
+        d9_types = []
+        moon_d1_type = mercury_d1_type = None
+        moon_d1_lon = mercury_d1_lon = None
+        moon_d9_lon = mercury_d9_lon = None
+
+        for name, pid in planets.items():
+            # 3a) D1 (sidereal) longitude at 00:00 UTC
+            lon = swe.calc_ut(jd, pid, swe.FLG_SIDEREAL | swe.FLG_SWIEPH)[0][0]
+            if name == "Ketu":
+                true_node_lon = swe.calc_ut(jd, swe.TRUE_NODE, swe.FLG_SIDEREAL | swe.FLG_SWIEPH)[0][0]
+                lon = (true_node_lon + 180) % 360
+
+            # Record D1 longitudes for Moon & Mercury
+            if name == "Moon":
+                moon_d1_lon = lon
+            if name == "Mercury":
+                mercury_d1_lon = lon
+
+            # Classify D1 sign type
+            sign_index = int(lon // 30)
+            rashi = signs[sign_index]
+            d1_sign_num = custom_d1_map[rashi]
+            d1_type = classify_sign_type(d1_sign_num)
+            d1_types.append(d1_type)
+
+            if name == "Moon":
+                moon_d1_type = d1_type
+            if name == "Mercury":
+                mercury_d1_type = d1_type
+
+            # 3b) Compute D9 (Navamsa) longitude:
+            navamsa_size = 30 / 9
+            pos_in_sign = lon % 30
+            nav_sign_idx = get_d9_sign_index(lon)
+            d9_deg_in_sign = (pos_in_sign % navamsa_size) * 9
+            d9_lon = nav_sign_idx * 30 + d9_deg_in_sign
+
+            # Record D9 longitudes for Moon & Mercury
+            if name == "Moon":
+                moon_d9_lon = d9_lon
+            if name == "Mercury":
+                mercury_d9_lon = d9_lon
+
+            # Classify D9 sign
+            d9_sign = signs[nav_sign_idx]
+            d9_sign_num = custom_d9_map[d9_sign]
+            d9_type = classify_sign_type(d9_sign_num)
+            d9_types.append(d9_type)
+
+        # 4) Count Movable/Fixed in D1 & D9
+        d1_movable_count = d1_types.count("Movable")
+        d1_fixed_count   = d1_types.count("Fixed")
+        d9_movable_count = d9_types.count("Movable")
+        d9_fixed_count   = d9_types.count("Fixed")
+
+        # 5) Moon & Mercury combined status (for highlighting)
+        if moon_d1_type == "Movable" and mercury_d1_type == "Movable":
+            mm_status = "Moon & Mercury: Movable"
+        elif moon_d1_type == "Fixed" and mercury_d1_type == "Fixed":
+            mm_status = "Moon & Mercury: Fixed"
+        else:
+            mm_status = f"Moon: {moon_d1_type}, Mercury: {mercury_d1_type}"
+
+        # 6) Compute Moon→Mercury and Mercury→Moon diffs for D1
+        #    → raw signed diff (0–360), convert to (−180…+180)
+        raw_m2me_d1 = (moon_d1_lon - mercury_d1_lon + 360) % 360
+        if raw_m2me_d1 > 180:
+            raw_m2me_d1 -= 360
+        raw_m2me_d1 = round(raw_m2me_d1, 2)
+
+        raw_me2m_d1 = (mercury_d1_lon - moon_d1_lon + 360) % 360
+        if raw_me2m_d1 > 180:
+            raw_me2m_d1 -= 360
+        raw_me2m_d1 = round(raw_me2m_d1, 2)
+
+        # Minimal absolute difference (0–180)
+        min_m2me_d1 = minimal_abs_diff(moon_d1_lon, mercury_d1_lon)
+        min_me2m_d1 = minimal_abs_diff(mercury_d1_lon, moon_d1_lon)
+
+        # If within ±1° of {0, 90, 180}, show that key angle; otherwise show actual
+        def label_diff(min_diff):
+            for target in (0, 90, 180):
+                if abs(min_diff - target) <= 1:
+                    return f"{target}°"
+            return f"{min_diff:.2f}°"
+
+        label_m2me_d1 = label_diff(min_m2me_d1)
+        label_me2m_d1 = label_diff(min_me2m_d1)
+        mm_d1_label = f"{label_m2me_d1} / {label_me2m_d1}"
+
+        # 7) Compute Moon→Mercury and Mercury→Moon diffs for D9
+        raw_m2me_d9 = (moon_d9_lon - mercury_d9_lon + 360) % 360
+        if raw_m2me_d9 > 180:
+            raw_m2me_d9 -= 360
+        raw_m2me_d9 = round(raw_m2me_d9, 2)
+
+        raw_me2m_d9 = (mercury_d9_lon - moon_d9_lon + 360) % 360
+        if raw_me2m_d9 > 180:
+            raw_me2m_d9 -= 360
+        raw_me2m_d9 = round(raw_me2m_d9, 2)
+
+        min_m2me_d9 = minimal_abs_diff(moon_d9_lon, mercury_d9_lon)
+        min_me2m_d9 = minimal_abs_diff(mercury_d9_lon, moon_d9_lon)
+
+        label_m2me_d9 = label_diff(min_m2me_d9)
+        label_me2m_d9 = label_diff(min_me2m_d9)
+        mm_d9_label = f"{label_m2me_d9} / {label_me2m_d9}"
+
+        # 8) Append row
+        report_rows.append({
+            "Date": current_date.strftime("%Y-%m-%d"),
+            "Day Type": day_type,
+            "Reason": reason,
+            "D1 Movable": d1_movable_count,
+            "D9 Movable": d9_movable_count,
+            "D1 Fixed": d1_fixed_count,
+            "D9 Fixed": d9_fixed_count,
+            "Moon & Mercury D1": mm_d1_label,
+            "Moon & Mercury D9": mm_d9_label,
+            "Moon & Mercury": mm_status
+        })
+
+        current_date += datetime.timedelta(days=1)
+
+    # Create DataFrame
+    df = pd.DataFrame(report_rows)
+
+    # === Render Highlighted HTML Table ===
+    def render_highlighted_report(df):
+        rows_html = []
+        for _, row in df.iterrows():
+            status = row["Moon & Mercury"]
+            if status.strip() == "Moon & Mercury: Movable":
+                style = "background-color: black; color: white;"
+            elif status.strip() == "Moon & Mercury: Fixed":
+                style = "background-color: #ffcccc;"  # light red
+            else:
+                style = ""
+
+            cells = "".join([f"<td>{row[col]}</td>" for col in df.columns])
+            rows_html.append(f"<tr style='{style}'>{cells}</tr>")
+
+        header_html = "".join([f"<th>{col}</th>" for col in df.columns])
+        html = f"""
+        <div class="scroll-table">
+            <table>
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>
+                    {''.join(rows_html)}
+                </tbody>
+            </table>
+        </div>
+        """
+        return html
+
+    st.markdown("### 📊 Final Daily Report Table")
+    st.markdown(render_highlighted_report(df), unsafe_allow_html=True)
+
+elif filter_mode == "Moon–Mercury Aspects":
+    st.header("🌕 Mercury–Moon Aspects (D1 & D9 ±1°)")
+
+    import swisseph as swe
+    import pandas as pd
+    import re
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+
+    # === Setup ===
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    LAT = 19.076
+    LON = 72.8777
+    TZ_OFFSET = 5.5  # IST
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2025, 6, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime(2025, 6, 30))
+
+    # Time Ranges
+    D1_START_HOUR, D1_END_HOUR = 0, 23
+    D9_START_HOUR, D9_END_HOUR = 8, 16
+
+    # Helpers
+    def angular_diff(from_deg, to_deg):
+        return round((to_deg - from_deg) % 360, 2)
+
+    def check_aspects(from_deg, to_deg):
+        angles = [0, 90, 180]
+        matched = []
+        diff1 = angular_diff(from_deg, to_deg)
+        diff2 = angular_diff(to_deg, from_deg)
+        for angle in angles:
+            if abs(diff1 - angle) <= 1:
+                matched.append(f"Moon→Mercury ≈ {angle}°")
+            if abs(diff2 - angle) <= 1:
+                matched.append(f"Mercury→Moon ≈ {angle}°")
+        return matched if matched else ["nan"]
+
+    def get_d9_longitude(longitude_deg):
+        sign_index = int(longitude_deg // 30)
+        pos_in_sign = longitude_deg % 30
+        navamsa_index = int(pos_in_sign // (30 / 9))
+        if sign_index in [0, 3, 6, 9]:
+            start = sign_index
+        elif sign_index in [1, 4, 7, 10]:
+            start = (sign_index + 8) % 12
+        else:
+            start = (sign_index + 4) % 12
+        d9_sign_index = (start + navamsa_index) % 12
+        deg_in_navamsa = pos_in_sign % (30 / 9)
+        d9_long = d9_sign_index * 30 + deg_in_navamsa * 9
+        return d9_long
+
+    def extract_angles(aspect_str):
+        if aspect_str == "nan":
+            return set()
+        return set(re.findall(r"(Moon→Mercury|Mercury→Moon) ≈ (\d+)°", aspect_str))
+
+    # === Process Dates ===
+    results_d1 = []
+    results_d9 = []
+
+    for day in pd.date_range(start_date, end_date):
+        # D1 window
+        for hour in range(D1_START_HOUR, D1_END_HOUR + 1):
+            dt = datetime(day.year, day.month, day.day, hour, 0)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute / 60)
+            flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+            moon = swe.calc_ut(jd, swe.MOON, flag)[0][0]
+            mercury = swe.calc_ut(jd, swe.MERCURY, flag)[0][0]
+            aspects = check_aspects(moon, mercury)
+            if aspects != ["nan"]:
+                results_d1.append({
+                    "Date": dt.date(),
+                    "Time (IST)": dt.time(),
+                    "D1 Aspects": ", ".join(aspects)
+                })
+
+        # D9 window
+        for hour in range(D9_START_HOUR, D9_END_HOUR + 1):
+            dt = datetime(day.year, day.month, day.day, hour, 0)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute / 60)
+            flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+            moon = swe.calc_ut(jd, swe.MOON, flag)[0][0]
+            mercury = swe.calc_ut(jd, swe.MERCURY, flag)[0][0]
+            moon_d9 = get_d9_longitude(moon)
+            mercury_d9 = get_d9_longitude(mercury)
+            aspects = check_aspects(moon_d9, mercury_d9)
+            if aspects != ["nan"]:
+                results_d9.append({
+                    "Date": dt.date(),
+                    "Time (IST)": dt.time(),
+                    "D9 Aspects": ", ".join(aspects)
+                })
+
+    # === Group By Date ===
+    all_dates = pd.date_range(start=start_date, end=end_date).date
+    grouped_d1 = defaultdict(set)
+    grouped_d1_times = defaultdict(list)
+    grouped_d9 = defaultdict(set)
+    grouped_d9_times = defaultdict(list)
+
+    for row in results_d1:
+        d = row["Date"]
+        grouped_d1[d].update(extract_angles(row["D1 Aspects"]))
+        grouped_d1_times[d].append(str(row["Time (IST)"]))
+
+    for row in results_d9:
+        d = row["Date"]
+        grouped_d9[d].update(extract_angles(row["D9 Aspects"]))
+        grouped_d9_times[d].append(str(row["Time (IST)"]))
+
+    # === Build Summary ===
+    summary = []
+    for d in all_dates:
+        d1_text = ", ".join([f"{dir} ≈ {deg}°" for dir, deg in sorted(grouped_d1[d])]) if grouped_d1[d] else "0"
+        d9_text = ", ".join([f"{dir} ≈ {deg}°" for dir, deg in sorted(grouped_d9[d])]) if grouped_d9[d] else "0"
+        d1_times = sorted(set(grouped_d1_times[d]))[0] if grouped_d1_times[d] else "0"
+        d9_times = ", ".join(sorted(set(grouped_d9_times[d]))) if grouped_d9_times[d] else "0"
+
+        summary.append({
+            "Date": d,
+            "D1 Aspects": d1_text,
+            "D1 Aspect Time(s)": d1_times,
+            "D9 Aspects": d9_text,
+            "D9 Aspect Time(s)": d9_times
+        })
+
+    df_summary = pd.DataFrame(summary)
+
+    # 🔥 Filter out rows where both D1 and D9 aspects are "0"
+    df_summary_filtered = df_summary[
+        (df_summary["D1 Aspects"] != "0") | (df_summary["D9 Aspects"] != "0")
+    ]
+
+
+    st.markdown("### 📅 Final Moon–Mercury Aspect Table")
+    def render_aspect_table(df):
+        rows_html = []
+        for _, row in df.iterrows():
+            d1 = row["D1 Aspects"]
+            d9 = row["D9 Aspects"]
+            if d1 != "0" or d9 != "0":
+                style = "background-color: black; color: white;"
+            else:
+                style = ""
+
+            row_cells = "".join([f"<td>{val}</td>" for val in row])
+            rows_html.append(f"<tr style='{style}'>{row_cells}</tr>")
+
+        header_html = "".join([f"<th>{col}</th>" for col in df.columns])
+        table_html = f"""
+        <div class="scroll-table">
+            <table>
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>
+                    {''.join(rows_html)}
+                </tbody>
+            </table>
+        </div>
+        """
+        return table_html
+
+    st.markdown(render_aspect_table(df_summary_filtered), unsafe_allow_html=True)
+
+    
+
+       
 
 
 
