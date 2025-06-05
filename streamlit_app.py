@@ -386,36 +386,6 @@ def get_combined_index_data(index_name, start_date, end_date):
             # Step 3: Return full data aligned to date range
             return df.reindex(full_range)
 
-def get_index_ohlc_data(index_name, ticker, start_date, end_date):
-        full_range = pd.date_range(start=start_date, end=end_date)
-        query = '''
-            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-            FROM ohlc_index
-            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-            ORDER BY "Date"
-        '''
-        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        df = df.sort_index()
-
-        # Fill missing with Yahoo if needed
-        missing_dates = full_range.difference(df.index)
-        if not missing_dates.empty:
-            import yfinance as yf
-            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index = False)
-            if not yf_data.empty:
-                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
-                append_df.reset_index(inplace=True)
-                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-                append_df['index_name'] = index_name
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
-                append_df.set_index('Date', inplace=True)
-                df = pd.concat([df, append_df])
-                df = df[~df.index.duplicated(keep='last')]
-
-        return df.reindex(full_range)
-
 def get_index_ohlc(index_name, ticker, start_date, end_date):
     import yfinance as yf
     full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
@@ -468,7 +438,6 @@ def get_index_ohlc(index_name, ticker, start_date, end_date):
                 df = df[~df.index.duplicated(keep='last')]
 
     return df.reindex(full_range)
-
 
 def plot_candlestick_chart(stock_data, vertical_lines=None):
 
@@ -1528,8 +1497,6 @@ elif filter_mode == "Equinox":
     index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
     ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
 
-
-
     # Recalculate volatility & close %
     numerology_df['date'] = pd.to_datetime(numerology_df['date'], errors='coerce')
     numerology_data = numerology_df.set_index('date')
@@ -1562,7 +1529,7 @@ elif filter_mode == "Equinox":
         return None
 
     filtered_dates = [dt for dt in all_dates if start_date <= dt.date() <= end_date]
-    ohlc_data = get_index_ohlc_data(index_name, ticker, start_date, end_date)
+    ohlc_data = get_index_ohlc(index_name, ticker, start_date, end_date)
 
     # Recalculate % columns
     ohlc_data['Volatility %'] = ((ohlc_data['High'] - ohlc_data['Low']) / ohlc_data['Low']) * 100
