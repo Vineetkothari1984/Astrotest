@@ -437,7 +437,7 @@ def get_index_ohlc(index_name, ticker, start_date, end_date):
     if not missing_dates.empty:
         fetch_start = missing_dates.min()
         fetch_end = end_date + pd.Timedelta(days=1)
-        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False)
+        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
 
         if not yf_data.empty:
             append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
