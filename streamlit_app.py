@@ -386,6 +386,90 @@ def get_combined_index_data(index_name, start_date, end_date):
             # Step 3: Return full data aligned to date range
             return df.reindex(full_range)
 
+def get_index_ohlc_data(index_name, ticker, start_date, end_date):
+        full_range = pd.date_range(start=start_date, end=end_date)
+        query = '''
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        '''
+        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df = df.sort_index()
+
+        # Fill missing with Yahoo if needed
+        missing_dates = full_range.difference(df.index)
+        if not missing_dates.empty:
+            import yfinance as yf
+            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index = False)
+            if not yf_data.empty:
+                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
+                append_df.reset_index(inplace=True)
+                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
+                append_df['index_name'] = index_name
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                append_df.set_index('Date', inplace=True)
+                df = pd.concat([df, append_df])
+                df = df[~df.index.duplicated(keep='last')]
+
+        return df.reindex(full_range)
+
+def get_index_ohlc(index_name, ticker, start_date, end_date):
+    import yfinance as yf
+    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+
+    query = '''
+        SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+        FROM ohlc_index
+        WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+        ORDER BY "Date"
+    '''
+    df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
+    df['Date'] = pd.to_datetime(df['Date']).dt.normalize()
+    df.set_index('Date', inplace=True)
+    df = df[~df.index.duplicated(keep='last')]
+    df = df.sort_index()
+
+    missing_dates = full_range.difference(df.index)
+
+    if not missing_dates.empty:
+        fetch_start = missing_dates.min()
+        fetch_end = end_date + pd.Timedelta(days=1)
+        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False)
+
+        if not yf_data.empty:
+            append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+            append_df.reset_index(inplace=True)
+            append_df.rename(columns={'Date': 'Date', 'Volume': 'Vol(in M)'}, inplace=True)
+            append_df['index_name'] = index_name
+            append_df['Vol(in M)'] = append_df['Vol(in M)'] / 1_000_000
+            append_df['Date'] = pd.to_datetime(append_df['Date']).dt.normalize()
+
+            # Fetch existing keys to avoid inserting duplicates
+            existing_query = '''
+                SELECT "Date" FROM ohlc_index WHERE index_name = %s AND "Date" IN ({})
+            '''
+            placeholders = ",".join(["%s"] * len(append_df))
+            existing_dates = pd.read_sql(
+                existing_query.format(placeholders),
+                engine,
+                params=(index_name, *append_df['Date'].tolist())
+            )["Date"].dt.normalize()
+
+            append_df = append_df[~append_df['Date'].isin(existing_dates)]
+
+            if not append_df.empty:
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False, method="multi")
+
+                append_df.set_index('Date', inplace=True)
+                df = pd.concat([df, append_df])
+                df = df[~df.index.duplicated(keep='last')]
+
+    return df.reindex(full_range)
+
+
 def plot_candlestick_chart(stock_data, vertical_lines=None):
 
     import plotly.graph_objects as go
@@ -1319,47 +1403,6 @@ elif filter_mode == "View Nifty/BankNifty OHLC":
     symbol = "^NSEI" if index_choice == "Nifty 50" else "^NSEBANK"
     index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
 
-    def get_index_ohlc(index_name, ticker, start_date, end_date):
-        full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
-
-        # Try to get existing data from DB
-        query = '''
-            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-            FROM ohlc_index
-            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-            ORDER BY "Date"
-        '''
-        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        df = df.sort_index()
-        df = df[~df.index.duplicated(keep='last')]
-
-        # Fill missing from yFinance
-        missing_dates = full_range.difference(df.index)
-        if not missing_dates.empty:
-            fetch_start = missing_dates.min()
-            yf_data = yf.download(ticker, start=fetch_start, end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index=False)
-            if not yf_data.empty:
-                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                append_df.reset_index(inplace=True)
-                append_df['index_name'] = index_name
-                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-                # Drop duplicates before inserting (if any)
-                append_df.drop_duplicates(subset=["Date", "index_name"], keep="last", inplace=True)
-
-                # Convert volume to millions if it's from Yahoo
-                append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
-
-                # Append to database
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False, method="multi")
-
-                append_df.set_index('Date', inplace=True)
-                df = pd.concat([df, append_df])
-                df = df[~df.index.duplicated(keep='last')]
-
-        return df.reindex(full_range)
-
     # Load numerology
     numerology_aligned = numerology_df.copy()
     numerology_aligned['date'] = pd.to_datetime(numerology_aligned['date'], errors='coerce')
@@ -1485,35 +1528,7 @@ elif filter_mode == "Equinox":
     index_name = "Nifty" if index_choice == "Nifty 50" else "BankNifty"
     ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
 
-    def get_index_ohlc_data(index_name, ticker, start_date, end_date):
-        full_range = pd.date_range(start=start_date, end=end_date)
-        query = '''
-            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-            FROM ohlc_index
-            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-            ORDER BY "Date"
-        '''
-        df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
-        df = df.sort_index()
 
-        # Fill missing with Yahoo if needed
-        missing_dates = full_range.difference(df.index)
-        if not missing_dates.empty:
-            import yfinance as yf
-            yf_data = yf.download(ticker, start=missing_dates.min(), end=end_date + pd.Timedelta(days=1), progress=False, multi_level_index = False)
-            if not yf_data.empty:
-                append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']]
-                append_df.reset_index(inplace=True)
-                append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
-                append_df['index_name'] = index_name
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
-                append_df.set_index('Date', inplace=True)
-                df = pd.concat([df, append_df])
-                df = df[~df.index.duplicated(keep='last')]
-
-        return df.reindex(full_range)
 
     # Recalculate volatility & close %
     numerology_df['date'] = pd.to_datetime(numerology_df['date'], errors='coerce')
@@ -2899,12 +2914,10 @@ elif filter_mode == "Planetary Report":
     with col2:
         end_date = st.date_input("End Date", value=datetime.date(2025, 6, 30))
 
-    # === Swiss Ephemeris Setup ===
-    swe.set_ephe_path("C:/ephe")  # Adjust to your ephemeris‐file path
+    swe.set_ephe_path("C:/ephe")  
     swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-    timezone_offset = 5.5  # IST → UTC offset
+    timezone_offset = 5.5  
 
-    # === Planet Definitions ===
     planets = {
         "Sun": swe.SUN,
         "Moon": swe.MOON,
@@ -2920,7 +2933,6 @@ elif filter_mode == "Planetary Report":
         "Pluto": swe.PLUTO
     }
 
-    # === Sign Names & Mappings for D1/D9 ===
     signs = [
         'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
         'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'
@@ -2937,7 +2949,6 @@ elif filter_mode == "Planetary Report":
         "Dual":    [3, 6, 9, 12]
     }
 
-    # === Planet Speed Order (fastest → slowest) ===
     planet_order = [
         "Moon", "Mercury", "Venus", "Sun", "Mars",
         "Jupiter", "Rahu", "Ketu", "Saturn",
@@ -2945,7 +2956,6 @@ elif filter_mode == "Planetary Report":
     ]
     planet_rank = {planet: i for i, planet in enumerate(planet_order)}
 
-    # === Helper: Compute Navamsa (D9) Sign Index ===
     def get_d9_sign_index(longitude_deg):
         sign_index = int(longitude_deg // 30)
         pos_in_sign = longitude_deg % 30
@@ -2957,8 +2967,7 @@ elif filter_mode == "Planetary Report":
         else:
             start = (sign_index + 4) % 12
         return (start + navamsa_index) % 12
-
-    # === Helper: Classify Sign Number → Movable/Fixed/Dual ===
+    
     def classify_sign_type(sign_number):
         if sign_number in sign_types["Movable"]:
             return "Movable"
@@ -2968,7 +2977,6 @@ elif filter_mode == "Planetary Report":
             return "Dual"
         return "Unknown"
 
-    # === Helper: Conjunction Logic (±1°) ===
     def get_conjunction_day_info(jd):
         """
         Returns (day_type, reason). If any two planets are within ±1° on this JD:
@@ -2979,7 +2987,6 @@ elif filter_mode == "Planetary Report":
         """
         flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
 
-        # 1) Compute sidereal longitude & speed for each planet at 00:00 UTC
         planet_data = {}
         for name, pid in planets.items():
             lon, speed = swe.calc_ut(jd, pid, flag)[0][0:2]
@@ -3176,7 +3183,7 @@ elif filter_mode == "Planetary Report":
             if status.strip() == "Moon & Mercury: Movable":
                 style = "background-color: black; color: white;"
             elif status.strip() == "Moon & Mercury: Fixed":
-                style = "background-color: #ffcccc;"  # light red
+                style = "background-color: #ffcccc;"  
             else:
                 style = ""
 
@@ -3374,6 +3381,3 @@ elif filter_mode == "Moon–Mercury Aspects":
     
 
        
-
-
-
