@@ -7,6 +7,10 @@ from datetime import datetime
 from datetime import timedelta
 from sqlalchemy import create_engine
 import base64
+from itertools import combinations
+import swisseph as swe
+
+
 
 import hashlib
 
@@ -489,6 +493,122 @@ def plot_candlestick_chart(stock_data, vertical_lines=None):
     
     return fig
 
+from collections import defaultdict
+
+aspect_config = {
+    "Sun→Ketu": {"from": "Sun", "to": "Ketu", "angles": [0, 90, 120]},
+    "Venus→Ketu": {"from": "Venus", "to": "Ketu", "angles": [0, 120]},
+}
+
+planet_map = {
+    'Sun': swe.SUN, 'Moon': swe.MOON, 'Mercury': swe.MERCURY, 'Venus': swe.VENUS,
+    'Mars': swe.MARS, 'Jupiter': swe.JUPITER, 'Saturn': swe.SATURN,
+    'Rahu': swe.MEAN_NODE, 'Ketu': swe.TRUE_NODE
+}
+
+def angular_diff(from_deg, to_deg):
+    return round((to_deg - from_deg) % 360, 2)
+
+def check_aspects(from_deg, to_deg, angles, label):
+    for angle in angles:
+        if abs(angular_diff(from_deg, to_deg) - angle) <= 0.5:
+            return f"{label} ≈ {angle}°"
+    return None
+
+def get_d9_longitude(lon):
+    sign_index = int(lon // 30)
+    pos_in_sign = lon % 30
+    navamsa_index = int(pos_in_sign // (30 / 9))
+    if sign_index in [0, 3, 6, 9]: start = sign_index
+    elif sign_index in [1, 4, 7, 10]: start = (sign_index + 8) % 12
+    else: start = (sign_index + 4) % 12
+    d9_sign_index = (start + navamsa_index) % 12
+    deg_in_navamsa = pos_in_sign % (30 / 9)
+    return d9_sign_index * 30 + deg_in_navamsa * 9
+
+def check_mm_aspects(from_deg, to_deg):
+    angles = [0, 90, 180]
+    matched = []
+    diff1 = angular_diff(from_deg, to_deg)
+    diff2 = angular_diff(to_deg, from_deg)
+    for angle in angles:
+        if abs(diff1 - angle) <= 1:
+            matched.append(f"Moon→Mercury ≈ {angle}°")
+        if abs(diff2 - angle) <= 1:
+            matched.append(f"Mercury→Moon ≈ {angle}°")
+    return ", ".join(matched) if matched else "0"
+
+def get_d9_longitude(longitude_deg):
+    sign_index = int(longitude_deg // 30)
+    pos_in_sign = longitude_deg % 30
+    navamsa_index = int(pos_in_sign // (30 / 9))
+    if sign_index in [0, 3, 6, 9]:
+        start = sign_index
+    elif sign_index in [1, 4, 7, 10]:
+        start = (sign_index + 8) % 12
+    else:
+        start = (sign_index + 4) % 12
+    d9_sign_index = (start + navamsa_index) % 12
+    deg_in_navamsa = pos_in_sign % (30 / 9)
+    return d9_sign_index * 30 + deg_in_navamsa * 9
+
+def classify_sign_type(sign_number):
+        for k, v in sign_types.items():
+            if sign_number in v:
+                return k
+        return "Unknown"
+
+def get_planet_deg(jd, name):
+    flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+    lon = swe.calc_ut(jd, planets[name], flag)[0][0]
+    if name == "Ketu":
+        lon = (swe.calc_ut(jd, planets["Rahu"], flag)[0][0] + 180) % 360
+    return lon
+
+def get_day_type(jd):
+    flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
+    data = {}
+    for name in planets:
+        lon, speed = swe.calc_ut(jd, planets[name], flag)[0][0:2]
+        if name == "Ketu":
+            lon = (swe.calc_ut(jd, planets["Rahu"], flag)[0][0] + 180) % 360
+            speed = -speed
+        data[name] = {"deg": lon, "speed": speed}
+
+    for p1, p2 in combinations(data.keys(), 2):
+        r1, r2 = planet_rank.get(p1, 999), planet_rank.get(p2, 999)
+        fast, slow = (p1, p2) if r1 < r2 else (p2, p1)
+        d1, d2 = data[fast]["deg"], data[slow]["deg"]
+        diff = (d1 - d2 + 360) % 360
+        if diff > 180:
+            diff -= 360
+        if abs(diff) <= 1:
+            return "Red Day" if diff < 0 else "Green Day"
+    return "-"
+
+nakshatras = [
+        "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu",
+        "Pushya", "Ashlesha", "Magha", "Purva Phalguni", "Uttara Phalguni", "Hasta",
+        "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha",
+        "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
+        "Uttara Bhadrapada", "Revati"
+    ]
+
+planets = {
+    "Sun": swe.SUN,
+    "Moon": swe.MOON,
+    "Mars": swe.MARS,
+    "Mercury": swe.MERCURY,
+    "Jupiter": swe.JUPITER,
+    "Venus": swe.VENUS,
+    "Saturn": swe.SATURN,
+    "Rahu": swe.TRUE_NODE,
+    "Ketu": swe.TRUE_NODE,
+    "Uranus": swe.URANUS,
+    "Neptune": swe.NEPTUNE,
+    "Pluto": swe.PLUTO
+}
+
 # Load data
 stock_df = load_stock_data()
 numerology_df = load_numerology_data()
@@ -654,6 +774,7 @@ filter_mode = st.sidebar.radio(
         "Planetary Aspects",
         "Swapt Nadi Chakra",
         "Planetary Ingress",
+        "AOT Monthly Calendar"
         ])
 
 if filter_mode == "Filter by Sector/Symbol":
@@ -2590,28 +2711,7 @@ elif filter_mode == "Navamasa":
         'Venus', 'Mars', 'Jupiter', 'Saturn', 'Saturn', 'Jupiter'
     ]
 
-    nakshatras = [
-        "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu",
-        "Pushya", "Ashlesha", "Magha", "Purva Phalguni", "Uttara Phalguni", "Hasta",
-        "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha",
-        "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
-        "Uttara Bhadrapada", "Revati"
-    ]
-
-    planets = {
-        "Sun": swe.SUN,
-        "Moon": swe.MOON,
-        "Mars": swe.MARS,
-        "Mercury": swe.MERCURY,
-        "Jupiter": swe.JUPITER,
-        "Venus": swe.VENUS,
-        "Saturn": swe.SATURN,
-        "Rahu": swe.TRUE_NODE,
-        "Ketu": swe.TRUE_NODE,
-        "Uranus": swe.URANUS,
-        "Neptune": swe.NEPTUNE,
-        "Pluto": swe.PLUTO
-    }
+    
 
     custom_d1_map = {sign: i+1 for i, sign in enumerate(signs)}
     custom_d9_map = {
@@ -3693,7 +3793,7 @@ elif filter_mode == "Planetary Ingress":
                     "To Sign": current_sign
                 })
                 last_sign[name] = current_sign
-
+ 
     df_ingress = pd.DataFrame(results)
 
     # === Render as HTML Table ===
@@ -3704,7 +3804,362 @@ elif filter_mode == "Planetary Ingress":
     else:
         st.info("No ingress events found in selected date range.")
 
+elif filter_mode == "AOT Monthly Calendar":
+    st.header("📅 AOT Monthly Report")
 
-   
+    import swisseph as swe
+    import pandas as pd
+    from datetime import datetime, timedelta
 
-       
+    # === Config
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+    LAT = 19.0760
+    LON = 72.8777
+    TZ_OFFSET = 5.5  # IST
+
+    # === Input
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=30), key="aot_start")
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.today(), key="aot_end")
+
+    nadi_map = {
+    'Bharni': 'Prachanda', 'Krittika': 'Prachanda', 'Vishakha': 'Prachanda', 'Anuradha': 'Prachanda',
+    'Ashwani': 'Pawan', 'Rohini': 'Pawan', 'Swati': 'Pawan', 'Jyeshta': 'Pawan',
+    'Mrigsira': 'Dahan', 'Chitra': 'Dahan', 'Mula': 'Dahan', 'Revati': 'Dahan',
+    'Ardra': 'Soumya', 'Hasta': 'Soumya', 'P.Ashadha': 'Soumya', 'U.Bhadra Pada': 'Soumya',
+    'Punarvasu': 'Neera', 'U.Phalguni': 'Neera', 'U.Ashadha': 'Neera', 'P.Bhadra Pada': 'Neera',
+    'Pushya': 'Jala', 'P.Phalguni': 'Jala', 'Abhijit': 'Jala', 'Satabhisha': 'Jala',
+    'Ashlesha': 'Amrit', 'Magha': 'Amrit', 'Sharavana': 'Amrit', 'Dhanishta': 'Amrit'
+    }
+
+    nakshatras = [
+        "Ashwani", "Bharni", "Krittika", "Rohini", "Mrigsira", "Ardra", "Punarvasu", "Pushya", "Ashlesha",
+        "Magha", "P.Phalguni", "U.Phalguni", "Hasta", "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshta",
+        "Mula", "P.Ashadha", "U.Ashadha", "Abhijit", "Sharavana", "Dhanishta", "Satabhisha",
+        "P.Bhadra Pada", "U.Bhadra Pada", "Revati"
+    ]
+
+    def get_nakshatra_name(degree):
+        return nakshatras[int(degree // (360 / 27))]
+
+    nadi_types = ["Prachanda", "Pawan", "Dahan", "Soumya", "Neera", "Jala", "Amrit"]
+
+    planet_list = {
+        'Sun': swe.SUN, 'Moon': swe.MOON, 'Mercury': swe.MERCURY, 'Venus': swe.VENUS,
+        'Mars': swe.MARS, 'Jupiter': swe.JUPITER, 'Saturn': swe.SATURN,
+        'Rahu': swe.MEAN_NODE, 'Ketu': swe.TRUE_NODE  # Ketu will be 180° from Rahu
+    }
+
+    # === Planet definitions
+    planets = {
+        "Sun": swe.SUN, "Moon": swe.MOON, "Mercury": swe.MERCURY,
+        "Venus": swe.VENUS, "Mars": swe.MARS, "Jupiter": swe.JUPITER,
+        "Saturn": swe.SATURN, "Rahu": swe.TRUE_NODE, "Ketu": swe.TRUE_NODE,
+        "Uranus": swe.URANUS, "Neptune": swe.NEPTUNE, "Pluto": swe.PLUTO
+    }
+
+    signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+             'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces']
+    
+    def get_sign_name(degree):
+        return signs[int(degree // 30)]
+    
+    planet_ingress_signs = {}
+    planet_list_ingress = {
+        'Sun': swe.SUN,
+        'Mercury': swe.MERCURY,
+        'Venus': swe.VENUS,
+        'Mars': swe.MARS,
+        'Jupiter': swe.JUPITER,
+        'Saturn': swe.SATURN,
+        'Rahu': swe.MEAN_NODE,
+        'Ketu': swe.TRUE_NODE  # Opposite of Rahu
+    }
+
+    def classify_sign_type(num):
+        if num in [1, 4, 7, 10]:
+            return "Movable"
+        elif num in [2, 5, 8, 11]:
+            return "Fixed"
+        elif num in [3, 6, 9, 12]:
+            return "Dual"
+        return "Unknown"
+
+
+
+    custom_d1_map = {sign: i + 1 for i, sign in enumerate(signs)}
+    sign_types = {
+        "Movable": [1, 4, 7, 10],
+        "Fixed": [2, 5, 8, 11],
+        "Dual": [3, 6, 9, 12]
+    }
+
+    planet_order = ["Moon", "Mercury", "Venus", "Sun", "Mars",
+                    "Jupiter", "Rahu", "Ketu", "Saturn", "Uranus", "Neptune", "Pluto"]
+    planet_rank = {p: i for i, p in enumerate(planet_order)}
+
+    def classify_sign_type(sign_number):
+        for k, v in sign_types.items():
+            if sign_number in v:
+                return k
+        return "Unknown"
+
+    # === Loop through dates
+    rows = []
+    current = start_date
+    while current <= end_date:
+        utc_dt = datetime(current.year, current.month, current.day) - timedelta(hours=TZ_OFFSET)
+        jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day)
+
+        # === Fixed Time: 9:00 AM IST for D1 and D9 Type Classification
+        classification_dt = datetime(current.year, current.month, current.day, 9, 0)
+        utc_dt_class = classification_dt - timedelta(hours=TZ_OFFSET)
+        jd_class = swe.julday(utc_dt_class.year, utc_dt_class.month, utc_dt_class.day, utc_dt_class.hour + utc_dt_class.minute / 60)
+
+        d1_types = {"Movable": [], "Fixed": [], "Dual": []}
+        d9_types = {"Movable": [], "Fixed": [], "Dual": []}
+        flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+
+        for name, pid in planets.items():
+            lon = swe.calc_ut(jd_class, pid, flag)[0][0]
+            if name == "Ketu":
+                rahu_lon = swe.calc_ut(jd_class, swe.MEAN_NODE, flag)[0][0]
+                lon = (rahu_lon + 180) % 360
+
+            # === D1 classification
+            d1_sign_index = int(lon // 30)
+            d1_sign_number = d1_sign_index + 1
+            d1_type = classify_sign_type(d1_sign_number)
+            d1_types[d1_type].append(name)
+
+            # === D9 classification
+            def get_d9_longitude(lon):
+                sign_index = int(lon // 30)
+                pos_in_sign = lon % 30
+                navamsa_index = int(pos_in_sign // (30 / 9))
+                if sign_index in [0, 3, 6, 9]:
+                    start = sign_index
+                elif sign_index in [1, 4, 7, 10]:
+                    start = (sign_index + 8) % 12
+                else:
+                    start = (sign_index + 4) % 12
+                d9_sign_index = (start + navamsa_index) % 12
+                deg_in_navamsa = pos_in_sign % (30 / 9)
+                return d9_sign_index * 30 + deg_in_navamsa * 9
+
+            d9_lon = get_d9_longitude(lon)
+            d9_sign_index = int(d9_lon // 30)
+            d9_sign_number = d9_sign_index + 1
+            d9_type = classify_sign_type(d9_sign_number)
+            d9_types[d9_type].append(name)
+
+        # Format result strings
+        d1_classified_str = " | ".join([f"{k}: {', '.join(v)}" for k, v in d1_types.items() if v])
+        d9_classified_str = " | ".join([f"{k}: {', '.join(v)}" for k, v in d9_types.items() if v])
+
+
+        # === Moon Nakshatra & Pada (Lahiri, 9:00 IST)
+        moon_dt = datetime(current.year, current.month, current.day, 9, 0)
+        moon_utc = moon_dt - timedelta(hours=TZ_OFFSET)
+        moon_jd = swe.julday(moon_utc.year, moon_utc.month, moon_utc.day, moon_utc.hour + moon_utc.minute / 60.0)
+
+        moon_lon = swe.calc_ut(moon_jd, swe.MOON)[0][0]
+
+        nak_index = int(moon_lon // (360 / 27))
+        moon_nak = nakshatras[nak_index]
+        moon_pada = int(((moon_lon % (360 / 27)) // (360 / 27 / 4)) + 1)
+
+
+        ingress_changes = []
+
+        flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+        for name, code in planet_list_ingress.items():
+            lon = swe.calc_ut(jd, code, flag)[0][0]
+            if name == "Ketu":
+                rahu_lon = swe.calc_ut(jd, swe.MEAN_NODE, flag)[0][0]
+                lon = (rahu_lon + 180) % 360
+
+            current_sign = get_sign_name(lon)
+
+            if name not in planet_ingress_signs:
+                planet_ingress_signs[name] = current_sign
+            elif planet_ingress_signs[name] != current_sign:
+                ingress_changes.append((name, planet_ingress_signs[name], current_sign))
+                planet_ingress_signs[name] = current_sign
+
+
+
+        # === D1 Aspect Detection
+        d1_aspect_result = "0"
+        for hour in range(0, 24):
+            dt = datetime(current.year, current.month, current.day, hour)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd_hour = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour)
+            flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+
+            longitudes = {}
+            for name, code in planet_map.items():
+                lon = swe.calc_ut(jd_hour, code, flag)[0][0]
+                if name == "Ketu":
+                    lon = (swe.calc_ut(jd_hour, swe.MEAN_NODE, flag)[0][0] + 180) % 360
+                longitudes[name] = lon
+
+            for label, config in aspect_config.items():
+                asp = check_aspects(longitudes[config["from"]], longitudes[config["to"]], config["angles"], label)
+                if asp:
+                    d1_aspect_result = asp
+                    break
+            if d1_aspect_result != "0":
+                break
+
+        # === D9 Aspect Detection
+        d9_aspect_result = "0"
+        for hour in range(8, 17):  # 8 AM to 4 PM
+            dt = datetime(current.year, current.month, current.day, hour)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd_hour = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour)
+            flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+
+            longitudes = {}
+            for name, code in planet_map.items():
+                lon = swe.calc_ut(jd_hour, code, flag)[0][0]
+                if name == "Ketu":
+                    lon = (swe.calc_ut(jd_hour, swe.MEAN_NODE, flag)[0][0] + 180) % 360
+                longitudes[name] = get_d9_longitude(lon)
+
+            for label, config in aspect_config.items():
+                asp = check_aspects(longitudes[config["from"]], longitudes[config["to"]], config["angles"], label)
+                if asp:
+                    d9_aspect_result = asp
+                    break
+            if d9_aspect_result != "0":
+                break
+
+
+
+        nadi_result = {n: [] for n in nadi_types}
+        flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
+
+        for planet in planet_list:
+            if planet == 'Ketu':
+                rahu_lon = swe.calc_ut(jd, swe.MEAN_NODE, flag)[0][0]
+                lon = (rahu_lon + 180) % 360
+            else:
+                lon = swe.calc_ut(jd, planet_list[planet], flag)[0][0]
+
+            nak = get_nakshatra_name(lon)
+            nadi = nadi_map.get(nak)
+            if nadi:
+                nadi_result[nadi].append(planet)
+
+            # Optional: combine only Prachanda & Pawan for now
+            prachanda_str = ", ".join(nadi_result["Prachanda"]) if nadi_result["Prachanda"] else ""
+            pawan_str = ", ".join(nadi_result["Pawan"]) if nadi_result["Pawan"] else ""
+
+
+        # === Ascendant Nakshatra + Pada Calculation
+        flags = swe.FLG_SIDEREAL
+        ascmc, cusp = swe.houses_ex(jd, LAT, LON, b'A', flags)
+        asc = ascmc[0]
+
+        nak_index = int(asc // (360 / 27))
+        pada = int(((asc % (360 / 27)) // (360 / 27 / 4)) + 1)
+        nak = nakshatras[nak_index]
+
+
+        # === Moon–Mercury Sign Classification
+        moon_d1 = get_planet_deg(jd, "Moon")
+        mercury_d1 = get_planet_deg(jd, "Mercury")
+        moon_sign = int(moon_d1 // 30)
+        mercury_sign = int(mercury_d1 // 30)
+        moon_type = classify_sign_type(custom_d1_map[signs[moon_sign]])
+        mercury_type = classify_sign_type(custom_d1_map[signs[mercury_sign]])
+
+        if moon_type == "Movable" and mercury_type == "Movable":
+            mm_status = "Moon & Mercury: Movable"
+        elif moon_type == "Fixed" and mercury_type == "Fixed":
+            mm_status = "Moon & Mercury: Fixed"
+        else:
+            mm_status = f"Moon: {moon_type}, Mercury: {mercury_type}"
+
+        # === Red/Green Day from conjunction logic
+        day_type = "-"
+        flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
+        data = {}
+        for name in planets:
+            lon, speed = swe.calc_ut(jd, planets[name], flag)[0][0:2]
+            if name == "Ketu":
+                lon = (swe.calc_ut(jd, planets["Rahu"], flag)[0][0] + 180) % 360
+                speed = -speed
+            data[name] = {"deg": lon, "speed": speed}
+        for p1, p2 in combinations(data.keys(), 2):
+            r1, r2 = planet_rank.get(p1, 999), planet_rank.get(p2, 999)
+            fast, slow = (p1, p2) if r1 < r2 else (p2, p1)
+            d1 = data[fast]["deg"]
+            d2 = data[slow]["deg"]
+            diff = (d1 - d2 + 360) % 360
+            if diff > 180:
+                diff -= 360
+            if abs(diff) <= 1:
+                day_type = "Red Day" if diff < 0 else "Green Day"
+                break
+
+        # === Moon–Mercury D1 Aspect (0–23 IST)
+        d1_aspect = "0"
+        for hour in range(0, 24):
+            dt = datetime(current.year, current.month, current.day, hour)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd_hour = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour)
+            m_deg = get_planet_deg(jd_hour, "Moon")
+            mc_deg = get_planet_deg(jd_hour, "Mercury")
+            asp = check_mm_aspects(m_deg, mc_deg)
+            if asp != "0":
+                d1_aspect = asp
+                break
+
+        # === Moon–Mercury D9 Aspect (8–16 IST)
+        d9_aspect = "0"
+        for hour in range(8, 17):
+            dt = datetime(current.year, current.month, current.day, hour)
+            utc_dt = dt - timedelta(hours=TZ_OFFSET)
+            jd_hour = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour)
+            m_deg = get_planet_deg(jd_hour, "Moon")
+            mc_deg = get_planet_deg(jd_hour, "Mercury")
+            m_d9 = get_d9_longitude(m_deg)
+            mc_d9 = get_d9_longitude(mc_deg)
+            asp = check_mm_aspects(m_d9, mc_d9)
+            if asp != "0":
+                d9_aspect = asp
+                break
+
+        rows.append({
+            "Date": current.strftime("%Y-%m-%d"),
+            "Day Type": day_type,
+            "Moon & Mercury": mm_status,
+            "D1 Aspect": d1_aspect,
+            "D9 Aspect": d9_aspect,
+            "Ascendant Nakshatra": nak,
+            "Ascendant Pada": pada,
+            "Prachanda": prachanda_str,
+            "Pawan": pawan_str,
+            "D1 Aspects": d1_aspect_result,
+            "D9 Aspects": d9_aspect_result,
+            "Ingress Planet": ingress_changes[0][0] if ingress_changes else "",
+            "From Sign": ingress_changes[0][1] if ingress_changes else "",
+            "To Sign": ingress_changes[0][2] if ingress_changes else "",
+            "Moon Nakshatra": moon_nak,
+            "Moon Pada": moon_pada,
+            "Planets M/F/D D1": d1_classified_str,
+            "Planets M/F/D D9": d9_classified_str,
+            })
+
+        current += timedelta(days=1)
+
+    df = pd.DataFrame(rows)
+
+    st.markdown("### 📊 Daily AOT View (with Moon–Mercury Aspects)")
+    html = df.to_html()
+    st.markdown(f'<div class="scroll-table">{html}</div>', unsafe_allow_html=True)
