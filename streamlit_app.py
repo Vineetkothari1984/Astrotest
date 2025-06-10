@@ -891,15 +891,7 @@ filter_mode = st.sidebar.radio(
         "Sun Number Dates",
         "Panchak",
         "Range",
-        "Daily Report",
-        "Navamasa",
-        "Planetary Conjunctions",
-        "Planetary Report",
-        "Moon–Mercury Aspects",
-        "Planetary Aspects",
-        "Swapt Nadi Chakra",
-        "Planetary Ingress",
-        "AOT Monthly Calendar"
+        
         ])
 
 if filter_mode == "Filter by Sector/Symbol":
