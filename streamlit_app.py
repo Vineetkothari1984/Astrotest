@@ -21,7 +21,6 @@ def hash_password(password):
 # Format: username: hashed_password
 USER_CREDENTIALS = {
     "admin": hash_password("admin123"),
-    "transleads": hash_password("leads27"),
     "vin": hash_password("vin69"),
 }
 
@@ -303,11 +302,11 @@ def get_combined_index_data(index_name, start_date, end_date):
         ORDER BY "Date"
     '''
     df = pd.read_sql(query, engine, params=(index_name, start_date, end_date))
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df.set_index("Date", inplace=True)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df.set_index('Date', inplace=True)
     df = df.sort_index()
 
-    # Step 2: Aggregate by Date
+    # ✅ Step 2: Aggregate by Date
     df = df.groupby(df.index).agg({
         "Open": "first",
         "High": "max",
@@ -316,7 +315,7 @@ def get_combined_index_data(index_name, start_date, end_date):
         "Vol(in M)": "sum"
     })
 
-    # Step 3: Check for missing dates
+    # Step 3: Check for missing dates and fetch from Yahoo
     missing_dates = full_range.difference(df.index)
     if not missing_dates.empty:
         fetch_start = missing_dates.min()
@@ -329,32 +328,45 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
             append_df["index_name"] = index_name
             append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
+            append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+            unique_dates = append_df["Date"].unique()
 
-            # Fetch existing dates to prevent duplicates
-            unique_dates = append_df["Date"].unique().tolist()
-            date_placeholders = ",".join(["%s"] * len(unique_dates))
+            if len(unique_dates) > 0:
+                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
+                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
+                query = f'''
+                    SELECT "Date"
+                    FROM ohlc_index
+                    WHERE index_name = %s AND "Date" IN {placeholder}
+                '''
+                params = (index_name, *date_tuple)
+                existing_df = pd.read_sql(query, engine, params=params)
+                existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
+                existing_dates = existing_df["Date"].dt.normalize()
 
-            existing_query = f'''
-                SELECT DISTINCT "Date"
-                FROM ohlc_index
-                WHERE index_name = %s AND "Date" IN ({date_placeholders})
-            '''
-            params = [index_name] + [pd.Timestamp(d).to_pydatetime().date() for d in unique_dates]
-            existing_df = pd.read_sql(existing_query, engine, params=params)
-            existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
-            existing_dates = existing_df["Date"].dt.normalize()
+                append_df = append_df[~append_df["Date"].isin(existing_dates)]
 
-            # Drop rows already in DB
-            append_df = append_df[~append_df["Date"].isin(existing_dates)]
-
-            # Insert new rows
             if not append_df.empty:
-                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+                append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+                new_keys = list(zip(append_df["Date"], append_df["index_name"]))
+                placeholders = ",".join(["(%s, %s)"] * len(new_keys))
+                flat_params = [item for tup in new_keys for item in tup]
 
-    # Final return
+                existing_query = f'''
+                    SELECT "Date", index_name
+                    FROM ohlc_index
+                    WHERE (Date, index_name) IN ({placeholders})
+                '''
+                existing_df = pd.read_sql(existing_query, engine, params=flat_params)
+                existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
+                append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
+
+                if not append_df.empty:
+                    append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
+
+    # ✅ FINAL: Always return reindexed dataframe
     return df.reindex(full_range)
-
 
 def get_index_ohlc(index_name, ticker, start_date, end_date):
     import yfinance as yf
@@ -776,7 +788,14 @@ filter_mode = st.sidebar.radio(
         "Panchak",
         "Range",
         "Daily Report",
-        
+        "Navamasa",
+        "Planetary Conjunctions",
+        "Planetary Report",
+        "Moon–Mercury Aspects",
+        "Planetary Aspects",
+        "Swapt Nadi Chakra",
+        "Planetary Ingress",
+        "AOT Monthly Calendar"
         ])
 
 if filter_mode == "Filter by Sector/Symbol":
