@@ -259,6 +259,7 @@ def get_stock_data(ticker, start_date, end_date):
     stock_data = yf.download(ticker, start=start_date, end=end_date, multi_level_index = False)
     return stock_data
 
+
 def get_combined_index_data(index_name, start_date, end_date):
     import yfinance as yf
     full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
@@ -286,7 +287,7 @@ def get_combined_index_data(index_name, start_date, end_date):
         "Vol(in M)": "sum"
     })
 
-    # Step 2: Check for missing dates and fetch from Yahoo
+    # Step 3: Check for missing dates and fetch from Yahoo
     missing_dates = full_range.difference(df.index)
     if not missing_dates.empty:
         fetch_start = missing_dates.min()
@@ -298,43 +299,26 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df.reset_index(inplace=True)
             append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
             append_df["index_name"] = index_name
-
-            # ✅ Convert Volume to millions
             append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
-
-            # ✅ Drop duplicates
             append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
-
-            # Normalize dates for consistent comparison
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
             unique_dates = append_df["Date"].unique()
 
-            # If no dates, skip the rest
             if len(unique_dates) > 0:
                 date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
-    
                 placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
                 query = f'''
-                        SELECT "Date"
-                        FROM ohlc_index
-                        WHERE index_name = %s AND "Date" IN {placeholder}
-                        '''
-
+                    SELECT "Date"
+                    FROM ohlc_index
+                    WHERE index_name = %s AND "Date" IN {placeholder}
+                '''
                 params = (index_name, *date_tuple)
                 existing_dates = pd.read_sql(query, engine, params=params)["Date"].dt.normalize()
-
-                # Drop duplicates already in DB
                 append_df = append_df[~append_df["Date"].isin(existing_dates)]
 
-            # Final write if anything remains
             if not append_df.empty:
-                # Normalize date format to prevent subtle mismatches
                 append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
-
-                # Build a tuple of all (Date, index_name) in append_df
                 new_keys = list(zip(append_df["Date"], append_df["index_name"]))
-
-                # Fetch existing keys from DB
                 placeholders = ",".join(["(%s, %s)"] * len(new_keys))
                 flat_params = [item for tup in new_keys for item in tup]
 
@@ -343,20 +327,15 @@ def get_combined_index_data(index_name, start_date, end_date):
                     FROM ohlc_index
                     WHERE (Date, index_name) IN ({placeholders})
                 '''
-
                 existing_df = pd.read_sql(existing_query, engine, params=flat_params)
                 existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
-
-                # Drop rows already in DB
                 append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
 
-                # Insert remaining rows
                 if not append_df.empty:
                     append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
 
-
-            # Step 3: Return full data aligned to date range
-            return df.reindex(full_range)
+    # ✅ FINAL: Always return reindexed dataframe
+    return df.reindex(full_range)
 
 def get_index_ohlc(index_name, ticker, start_date, end_date):
     import yfinance as yf
@@ -2615,7 +2594,6 @@ elif filter_mode == "Range":
     
 
     recent_panchak = panchak_df[
-        (panchak_df['Start Date'] >= first_of_month) &
         (panchak_df['Start Date'] <= today)
     ].sort_values("Start Date", ascending=False)
 
@@ -2625,28 +2603,32 @@ elif filter_mode == "Range":
         end_date = row['End Date']
 
         ohlc = get_combined_index_data("Nifty", start_date, end_date)
-        eod_close = ohlc['Close'].dropna().iloc[-1]
-        high = ohlc['High'].max()
-        low = ohlc['Low'].min()
-        range_val = round(high - low, 2)
-
-        sp_levels = []
-        current = range_val
-        while True:
-            sp = round(current / 2, 2)
-            if sp < 10:
-                break
-            sp_levels.append(sp)
-            current = sp
-
-        if len(sp_levels) >= 2:
-            st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
-            df_monthly = generate_custom_levels(high, low, sp_levels, current_price=eod_close)
-
+        if ohlc is None or ohlc.empty:
+            st.warning(f"No OHLC data available from {start_date.date()} to {end_date.date()}")
+            df_monthly = pd.DataFrame()
         else:
-            st.warning("Not enough SP levels to calculate for Monthly Range.")
-    else:
-        st.info("No Panchak range found in current month.")
+            eod_close = ohlc['Close'].dropna().iloc[-1]
+            high = ohlc['High'].max()
+            low = ohlc['Low'].min()
+            range_val = round(high - low, 2)
+
+            sp_levels = []
+            current = range_val
+            while True:
+                sp = round(current / 2, 2)
+                if sp < 10:
+                    break
+                sp_levels.append(sp)
+                current = sp
+
+            if len(sp_levels) >= 2:
+                st.markdown(f"**High:** {high:.2f} | **Low:** {low:.2f} | **Range:** {range_val:.2f}")
+                df_monthly = generate_custom_levels(high, low, sp_levels, current_price=eod_close)
+            else:
+                st.warning("Not enough SP levels to calculate for Monthly Range.")
+                df_monthly = pd.DataFrame()
+
+            st.info("No Panchak range found in current month.")
 
     # === FORTNIGHTLY RANGE ===
     st.markdown("## 🌕 Fortnightly")
@@ -2748,6 +2730,7 @@ elif filter_mode == "Range":
         styled_df3 = df_weekly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2)
         html_table = styled_df3.to_html()
         st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
+
 
 elif filter_mode == "Daily Report":
     st.markdown("## 📆 Daily Numerology Report")
