@@ -340,7 +340,7 @@ def get_combined_index_data(index_name, start_date, end_date):
                 FROM ohlc_index
                 WHERE index_name = %s AND "Date" IN ({date_placeholders})
             '''
-            params = [index_name] + unique_dates
+            params = [index_name] + [pd.Timestamp(d).to_pydatetime().date() for d in unique_dates]
             existing_df = pd.read_sql(existing_query, engine, params=params)
             existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
             existing_dates = existing_df["Date"].dt.normalize()
