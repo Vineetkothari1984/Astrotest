@@ -330,6 +330,7 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df["index_name"] = index_name
             append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
+            append_df["index_name"] = index_name 
             append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
 
             # Step 4: Filter out already-existing rows
