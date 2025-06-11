@@ -332,34 +332,20 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
             unique_dates = append_df["Date"].unique()
 
-            # Convert all unique dates to safe Python datetime.datetime with 00:00:00
-            safe_datetimes = []
-            for d in unique_dates:
-                try:
-                    dt = pd.Timestamp(d).replace(hour=0, minute=0, second=0, microsecond=0).to_pydatetime()
-                    if isinstance(dt, datetime):  # ✅ Strict check
-                        safe_datetimes.append(dt)
-                except:
-                    continue
-
-            # Ensure list is flat and non-empty
-            if safe_datetimes:
-                placeholders = ",".join(["%s"] * len(safe_datetimes))
+            if len(unique_dates) > 0:
+                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
+                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
                 query = f'''
                     SELECT "Date"
                     FROM ohlc_index
-                    WHERE index_name = %s AND "Date" IN ({placeholders})
+                    WHERE index_name = %s AND "Date" IN {placeholder}
                 '''
-                params = tuple([index_name] + safe_datetimes)  # ✅ Flat tuple only!
-
+                params = (index_name, *date_tuple)
                 existing_df = pd.read_sql(query, engine, params=params)
                 existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
                 existing_dates = existing_df["Date"].dt.normalize()
 
-                # Drop already-present dates
                 append_df = append_df[~append_df["Date"].isin(existing_dates)]
-
-
 
             if not append_df.empty:
                 append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
