@@ -4196,7 +4196,6 @@ elif filter_mode == "AOT Monthly Calendar":
     html = df.to_html()
     st.markdown(f'<div class="scroll-table">{html}</div>', unsafe_allow_html=True)
 
-    st.dataframe(df)
 
 
 elif filter_mode == "Monthly OHLC Viewer":
