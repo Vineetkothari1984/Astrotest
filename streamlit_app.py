@@ -342,7 +342,10 @@ def get_combined_index_data(index_name, start_date, end_date):
                     WHERE index_name = %s AND "Date" IN {placeholder}
                 '''
                 params = (index_name, *date_tuple)
-                existing_dates = pd.read_sql(query, engine, params=params)["Date"].dt.normalize()
+                existing_df = pd.read_sql(query, engine, params=params)
+                existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
+                existing_dates = existing_df["Date"].dt.normalize()
+
                 append_df = append_df[~append_df["Date"].isin(existing_dates)]
 
             if not append_df.empty:
