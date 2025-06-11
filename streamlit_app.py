@@ -14,7 +14,37 @@ import hashlib
 DATABASE_URL = "postgresql://numeroniq-db_owner:npg_EWIGjD91LKxP@ep-muddy-boat-a15emu03-pooler.ap-southeast-1.aws.neon.tech/numeroniq-db?sslmode=require"
 engine = create_engine(DATABASE_URL)
 
+# Utility function to hash passwords
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
+# Format: username: hashed_password
+USER_CREDENTIALS = {
+    "admin": hash_password("admin123"),
+    "transleads": hash_password("leads27"),
+    "vin": hash_password("vin69"),
+}
+
+# Check login status
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+def login():
+    st.title("🔐 Secure Access")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == hash_password(password):
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.rerun()
+        else:
+            st.error("❌ Invalid username or password")
+
+if not st.session_state.authenticated:
+    login()
+    st.stop()
 
 st.set_page_config(page_title="Numeroniq", layout="wide")
 
@@ -259,7 +289,6 @@ def get_stock_data(ticker, start_date, end_date):
     stock_data = yf.download(ticker, start=start_date, end=end_date, multi_level_index = False)
     return stock_data
 
-
 def get_combined_index_data(index_name, start_date, end_date):
     import yfinance as yf
     full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
@@ -441,120 +470,6 @@ def plot_candlestick_chart(stock_data, vertical_lines=None):
     return fig
 
 from collections import defaultdict
-
-aspect_config = {
-    "Sun→Ketu": {"from": "Sun", "to": "Ketu", "angles": [0, 90, 120]},
-    "Venus→Ketu": {"from": "Venus", "to": "Ketu", "angles": [0, 120]},
-}
-
-planet_map = {
-    'Sun': swe.SUN, 'Moon': swe.MOON, 'Mercury': swe.MERCURY, 'Venus': swe.VENUS,
-    'Mars': swe.MARS, 'Jupiter': swe.JUPITER, 'Saturn': swe.SATURN,
-    'Rahu': swe.MEAN_NODE, 'Ketu': swe.TRUE_NODE
-}
-
-def angular_diff(from_deg, to_deg):
-    return round((to_deg - from_deg) % 360, 2)
-
-def check_aspects(from_deg, to_deg, angles, label):
-    for angle in angles:
-        if abs(angular_diff(from_deg, to_deg) - angle) <= 0.5:
-            return f"{label} ≈ {angle}°"
-    return None
-
-def get_d9_longitude(lon):
-    sign_index = int(lon // 30)
-    pos_in_sign = lon % 30
-    navamsa_index = int(pos_in_sign // (30 / 9))
-    if sign_index in [0, 3, 6, 9]: start = sign_index
-    elif sign_index in [1, 4, 7, 10]: start = (sign_index + 8) % 12
-    else: start = (sign_index + 4) % 12
-    d9_sign_index = (start + navamsa_index) % 12
-    deg_in_navamsa = pos_in_sign % (30 / 9)
-    return d9_sign_index * 30 + deg_in_navamsa * 9
-
-def check_mm_aspects(from_deg, to_deg):
-    angles = [0, 90, 180]
-    matched = []
-    diff1 = angular_diff(from_deg, to_deg)
-    diff2 = angular_diff(to_deg, from_deg)
-    for angle in angles:
-        if abs(diff1 - angle) <= 1:
-            matched.append(f"Moon→Mercury ≈ {angle}°")
-        if abs(diff2 - angle) <= 1:
-            matched.append(f"Mercury→Moon ≈ {angle}°")
-    return ", ".join(matched) if matched else "0"
-
-def get_d9_longitude(longitude_deg):
-    sign_index = int(longitude_deg // 30)
-    pos_in_sign = longitude_deg % 30
-    navamsa_index = int(pos_in_sign // (30 / 9))
-    if sign_index in [0, 3, 6, 9]:
-        start = sign_index
-    elif sign_index in [1, 4, 7, 10]:
-        start = (sign_index + 8) % 12
-    else:
-        start = (sign_index + 4) % 12
-    d9_sign_index = (start + navamsa_index) % 12
-    deg_in_navamsa = pos_in_sign % (30 / 9)
-    return d9_sign_index * 30 + deg_in_navamsa * 9
-
-def classify_sign_type(sign_number):
-        for k, v in sign_types.items():
-            if sign_number in v:
-                return k
-        return "Unknown"
-
-def get_planet_deg(jd, name):
-    flag = swe.FLG_SIDEREAL | swe.FLG_SWIEPH
-    lon = swe.calc_ut(jd, planets[name], flag)[0][0]
-    if name == "Ketu":
-        lon = (swe.calc_ut(jd, planets["Rahu"], flag)[0][0] + 180) % 360
-    return lon
-
-def get_day_type(jd):
-    flag = swe.FLG_SIDEREAL | swe.FLG_SPEED
-    data = {}
-    for name in planets:
-        lon, speed = swe.calc_ut(jd, planets[name], flag)[0][0:2]
-        if name == "Ketu":
-            lon = (swe.calc_ut(jd, planets["Rahu"], flag)[0][0] + 180) % 360
-            speed = -speed
-        data[name] = {"deg": lon, "speed": speed}
-
-    for p1, p2 in combinations(data.keys(), 2):
-        r1, r2 = planet_rank.get(p1, 999), planet_rank.get(p2, 999)
-        fast, slow = (p1, p2) if r1 < r2 else (p2, p1)
-        d1, d2 = data[fast]["deg"], data[slow]["deg"]
-        diff = (d1 - d2 + 360) % 360
-        if diff > 180:
-            diff -= 360
-        if abs(diff) <= 1:
-            return "Red Day" if diff < 0 else "Green Day"
-    return "-"
-
-nakshatras = [
-        "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu",
-        "Pushya", "Ashlesha", "Magha", "Purva Phalguni", "Uttara Phalguni", "Hasta",
-        "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha", "Mula", "Purva Ashadha",
-        "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada",
-        "Uttara Bhadrapada", "Revati"
-    ]
-
-planets = {
-    "Sun": swe.SUN,
-    "Moon": swe.MOON,
-    "Mars": swe.MARS,
-    "Mercury": swe.MERCURY,
-    "Jupiter": swe.JUPITER,
-    "Venus": swe.VENUS,
-    "Saturn": swe.SATURN,
-    "Rahu": swe.TRUE_NODE,
-    "Ketu": swe.TRUE_NODE,
-    "Uranus": swe.URANUS,
-    "Neptune": swe.NEPTUNE,
-    "Pluto": swe.PLUTO
-}
 
 # Load data
 stock_df = load_stock_data()
@@ -870,6 +785,7 @@ filter_mode = st.sidebar.radio(
         "Sun Number Dates",
         "Panchak",
         "Range",
+        "Daily Report",
         
         ])
 
@@ -2730,7 +2646,6 @@ elif filter_mode == "Range":
         styled_df3 = df_weekly.style.hide(axis="index").apply(highlight_range_levels, axis=1).format(precision=2)
         html_table = styled_df3.to_html()
         st.markdown(f'<div class="scroll-table">{html_table}</div>', unsafe_allow_html=True)
-
 
 elif filter_mode == "Daily Report":
     st.markdown("## 📆 Daily Numerology Report")
