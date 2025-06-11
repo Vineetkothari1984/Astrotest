@@ -22,7 +22,8 @@ def hash_password(password):
 USER_CREDENTIALS = {
     "admin": hash_password("admin123"),
     "vin": hash_password("vin69"),
-    "transleads": hash_password("leads27")
+    "transleads": hash_password("leads27"),
+    "mahesh": hash_password("mahesh@123")
 }
 
 # Check login status
