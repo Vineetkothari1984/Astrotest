@@ -790,14 +790,6 @@ filter_mode = st.sidebar.radio(
         "Panchak",
         "Range",
         "Daily Report",
-        "Navamasa",
-        "Planetary Conjunctions",
-        "Planetary Report",
-        "Moon–Mercury Aspects",
-        "Planetary Aspects",
-        "Swapt Nadi Chakra",
-        "Planetary Ingress",
-        "AOT Monthly Calendar",
         "Monthly OHLC Viewer"
         ])
 
