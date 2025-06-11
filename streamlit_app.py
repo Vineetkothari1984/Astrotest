@@ -332,15 +332,16 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
             unique_dates = append_df["Date"].unique()
 
+            # ✅ Patch this block only
             if len(unique_dates) > 0:
-                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
-                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
+                date_list = [pd.Timestamp(d).to_pydatetime().date() for d in unique_dates]
+                placeholders = ",".join(["%s"] * len(date_list))
                 query = f'''
                     SELECT "Date"
                     FROM ohlc_index
-                    WHERE index_name = %s AND "Date" IN {placeholder}
+                    WHERE index_name = %s AND "Date" IN ({placeholders})
                 '''
-                params = (index_name, *date_tuple)
+                params = [index_name] + date_list
                 existing_df = pd.read_sql(query, engine, params=params)
                 existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
                 existing_dates = existing_df["Date"].dt.normalize()
