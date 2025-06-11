@@ -353,18 +353,22 @@ def get_combined_index_data(index_name, start_date, end_date):
                 placeholders = ",".join(["(%s, %s)"] * len(new_keys))
                 flat_params = [item for tup in new_keys for item in tup]
 
-                # Check for existing (Date, index_name) combinations
-                keys_to_check = list(zip(append_df["Date"], append_df["index_name"]))
-                existing_query = '''
+                # Check for existing keys manually
+                keys = list(zip(append_df["Date"], append_df["index_name"]))
+                placeholders = ",".join(["(%s, %s)"] * len(keys))
+                flat_params = [item for tup in keys for item in tup]
+
+                existing_query = f'''
                     SELECT "Date", index_name
                     FROM ohlc_index
-                    WHERE (Date, index_name) IN :keys
+                    WHERE (Date, index_name) IN ({placeholders})
                 '''
-                existing_df = pd.read_sql(existing_query, engine, params={"keys": tuple(keys_to_check)})
+                existing_df = pd.read_sql(existing_query, engine, params=flat_params)
                 existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
 
-                # Filter only new rows to append
+                # Filter only new entries
                 append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
+
 
                 if not append_df.empty:
                     append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
