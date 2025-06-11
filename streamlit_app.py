@@ -353,12 +353,18 @@ def get_combined_index_data(index_name, start_date, end_date):
                 placeholders = ",".join(["(%s, %s)"] * len(new_keys))
                 flat_params = [item for tup in new_keys for item in tup]
 
+                existing_keys = list(zip(append_df["Date"], append_df["index_name"]))
+                placeholders = ",".join(["(%s, %s)"] * len(existing_keys))
+                flat_params = [item for pair in existing_keys for item in pair]
+
                 existing_query = f'''
                     SELECT "Date", index_name
                     FROM ohlc_index
                     WHERE (Date, index_name) IN ({placeholders})
                 '''
+
                 existing_df = pd.read_sql(existing_query, engine, params=flat_params)
+
                 existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
                 append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
 
