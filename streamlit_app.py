@@ -332,21 +332,29 @@ def get_combined_index_data(index_name, start_date, end_date):
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
             unique_dates = append_df["Date"].unique()
 
-            # ✅ Patch this block only
-            if len(unique_dates) > 0:
-                date_list = [pd.Timestamp(d).to_pydatetime().date() for d in unique_dates]
-                placeholders = ",".join(["%s"] * len(date_list))
-                query = f'''
-                    SELECT "Date"
-                    FROM ohlc_index
-                    WHERE index_name = %s AND "Date" IN ({placeholders})
-                '''
-                params = [index_name] + date_list
-                existing_df = pd.read_sql(query, engine, params=params)
-                existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
-                existing_dates = existing_df["Date"].dt.normalize()
+            # Convert to Python `datetime.datetime` with zeroed time
+            safe_datetimes = []
+            for d in unique_dates:
+                try:
+                    dt = pd.Timestamp(d).replace(hour=0, minute=0, second=0, microsecond=0).to_pydatetime()
+                    safe_datetimes.append(dt)
+                except Exception:
+                    continue  # skip invalid
 
-                append_df = append_df[~append_df["Date"].isin(existing_dates)]
+            # Build query with matching placeholders
+            placeholders = ",".join(["%s"] * len(safe_datetimes))
+            query = f'''
+                SELECT "Date"
+                FROM ohlc_index
+                WHERE index_name = %s AND "Date" IN ({placeholders})
+            '''
+            params = [index_name] + safe_datetimes
+
+            # Execute query safely
+            existing_df = pd.read_sql(query, engine, params=params)
+            existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
+            existing_dates = existing_df["Date"].dt.normalize()
+
 
             if not append_df.empty:
                 append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
