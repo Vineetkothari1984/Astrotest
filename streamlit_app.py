@@ -290,8 +290,9 @@ def get_stock_data(ticker, start_date, end_date):
 
 def get_combined_index_data(index_name, start_date, end_date):
     import yfinance as yf
-    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
+    import pandas as pd
 
+    full_range = pd.date_range(start=start_date, end=end_date - pd.Timedelta(days=1))
     ticker = "^NSEI" if index_name == "Nifty" else "^NSEBANK"
 
     # Step 1: Fetch from PostgreSQL
@@ -306,7 +307,7 @@ def get_combined_index_data(index_name, start_date, end_date):
     df.set_index('Date', inplace=True)
     df = df.sort_index()
 
-    # ✅ Step 2: Aggregate by Date
+    # Step 2: Aggregate by Date
     df = df.groupby(df.index).agg({
         "Open": "first",
         "High": "max",
@@ -321,60 +322,36 @@ def get_combined_index_data(index_name, start_date, end_date):
         fetch_start = missing_dates.min()
         fetch_end = end_date + pd.Timedelta(days=1)
 
-        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False, multi_level_index=False)
+        yf_data = yf.download(ticker, start=fetch_start, end=fetch_end, progress=False)
         if not yf_data.empty:
             append_df = yf_data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
             append_df.reset_index(inplace=True)
             append_df.rename(columns={"Date": "Date", "Volume": "Vol(in M)"}, inplace=True)
             append_df["index_name"] = index_name
             append_df["Vol(in M)"] = append_df["Vol(in M)"] / 1_000_000
-            append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
             append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
-            unique_dates = append_df["Date"].unique()
+            append_df.drop_duplicates(subset=["Date", "index_name"], inplace=True)
 
-            if len(unique_dates) > 0:
-                date_tuple = tuple(pd.to_datetime(unique_dates).tolist())
-                placeholder = "(" + ",".join(["%s"] * len(date_tuple)) + ")"
-                query = f'''
-                    SELECT "Date"
-                    FROM ohlc_index
-                    WHERE index_name = %s AND "Date" IN {placeholder}
-                '''
-                params = (index_name, *date_tuple)
-                existing_df = pd.read_sql(query, engine, params=params)
-                existing_df["Date"] = pd.to_datetime(existing_df["Date"], errors="coerce")
-                existing_dates = existing_df["Date"].dt.normalize()
+            # Step 4: Filter out already-existing rows
+            keys = list(zip(append_df["Date"], append_df["index_name"]))
+            placeholders = ",".join(["(%s, %s)"] * len(keys))
+            flat_params = [item for pair in keys for item in pair]
 
-                append_df = append_df[~append_df["Date"].isin(existing_dates)]
+            existing_query = f'''
+                SELECT "Date", index_name
+                FROM ohlc_index
+                WHERE (Date, index_name) IN ({placeholders})
+            '''
+            existing_df = pd.read_sql(existing_query, engine, params=flat_params)
+            existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
+
+            append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) not in existing_keys, axis=1)]
 
             if not append_df.empty:
-                append_df["Date"] = pd.to_datetime(append_df["Date"]).dt.normalize()
-                new_keys = list(zip(append_df["Date"], append_df["index_name"]))
-                placeholders = ",".join(["(%s, %s)"] * len(new_keys))
-                flat_params = [item for tup in new_keys for item in tup]
+                append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
 
-                # Check for existing keys manually
-                keys = list(zip(append_df["Date"], append_df["index_name"]))
-                placeholders = ",".join(["(%s, %s)"] * len(keys))
-                flat_params = [item for tup in keys for item in tup]
-
-                existing_query = f'''
-                    SELECT "Date", index_name
-                    FROM ohlc_index
-                    WHERE (Date, index_name) IN ({placeholders})
-                '''
-                existing_df = pd.read_sql(existing_query, engine, params=flat_params)
-                existing_keys = set(zip(existing_df["Date"], existing_df["index_name"]))
-
-                # Filter only new entries
-                append_df = append_df[~append_df.apply(lambda x: (x["Date"], x["index_name"]) in existing_keys, axis=1)]
-
-
-                if not append_df.empty:
-                    append_df.to_sql("ohlc_index", engine, if_exists="append", index=False)
-
-    # ✅ FINAL: Always return reindexed dataframe
     return df.reindex(full_range)
+
 
 def get_index_ohlc(index_name, ticker, start_date, end_date):
     import yfinance as yf
