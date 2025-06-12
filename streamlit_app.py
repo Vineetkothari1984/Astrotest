@@ -770,11 +770,11 @@ st.html("""
 </style>
 """)
 
-# === Secure Sidebar Section Access ===
+# === Role Permissions ===
 allowed_users_for_astro = ["admin", "vin"]
 
-# Define full list of all sidebar sections
-all_sections = [
+# === Section Groups
+numerology_sections = [
     "Company Overview", 
     "Numerology Date Filter", 
     "Filter by Sector/Symbol", 
@@ -788,7 +788,10 @@ all_sections = [
     "Sun Number Dates",
     "Panchak",
     "Range",
-    "Daily Report",
+    "Daily Report"
+]
+
+astro_sections = [
     "Navamasa",
     "Planetary Conjunctions",
     "Planetary Report",
@@ -799,28 +802,53 @@ all_sections = [
     "AOT Monthly Calendar"
 ]
 
-# Protected advanced astro sections
-astro_protected = [
-    "Navamasa",
-    "Planetary Conjunctions",
-    "Planetary Report",
-    "Moon–Mercury Aspects",
-    "Planetary Aspects",
-    "Swapt Nadi Chakra",
-    "Planetary Ingress",
-    "AOT Monthly Calendar"
+bayers_rule_sections = [
+    "Rule 1: Speed of Mercury",
+    "Rule 2: Mars–Mercury 59-Min Rule",
+    "Rule 3: 161° Mars–Mercury Bullish Signal",
+    "test Mars–Mercury 59-Min Rule",
+    "Rule 4: Mercury Retrograde Echo",
+    "Rule 13: Neptune Log Distance",
+    "Monthly OHLC Viewer",
+    "Rule 13: Planetary Log Distance"
 ]
 
-# Final sidebar section list depending on user
-if st.session_state.username in allowed_users_for_astro:
-    available_sections = all_sections
-else:
-    available_sections = [s for s in all_sections if s not in astro_protected]
-
-
-# === Toggle between filtering methods ===
+# === Sidebar Title
 st.sidebar.title("📊 Navigation")
-filter_mode = st.sidebar.radio("Choose Filter Mode:", available_sections)
+
+# === Setup session state tracker
+if "active_section" not in st.session_state:
+    st.session_state.active_section = "numerology"
+
+# === Functions to set active section
+def set_section(name):
+    st.session_state.active_section = name
+
+# === Sidebar Options
+with st.sidebar.expander("🧮 Numerology", expanded=True):
+    selected_numerology = st.radio("Select Numerology Mode:", numerology_sections, 
+                                   key="numerology_radio", on_change=set_section, args=("numerology",))
+
+if st.session_state.username in allowed_users_for_astro:
+    with st.sidebar.expander("🔭 Astrology"):
+        selected_astro = st.radio("Select Astro Mode:", astro_sections, 
+                                  key="astro_radio", on_change=set_section, args=("astro",))
+
+    with st.sidebar.expander("📜 Bayer’s Rules"):
+        selected_bayer = st.radio("Select Rule:", bayers_rule_sections, 
+                                  key="bayer_radio", on_change=set_section, args=("bayer",))
+
+# === Choose based on active section
+if st.session_state.active_section == "numerology":
+    filter_mode = selected_numerology
+elif st.session_state.active_section == "astro":
+    filter_mode = selected_astro
+elif st.session_state.active_section == "bayer":
+    filter_mode = selected_bayer
+else:
+    filter_mode = None
+
+
 
 if filter_mode == "Filter by Sector/Symbol":
     # === Sector Filter ===
@@ -4220,9 +4248,1216 @@ elif filter_mode == "AOT Monthly Calendar":
     html = df.to_html()
     st.markdown(f'<div class="scroll-table">{html}</div>', unsafe_allow_html=True)
 
+elif filter_mode == "Rule 1: Speed of Mercury":
+    st.header("📈 Nifty Candlestick + 🔭 Mercury Speed")
+
+    import pandas as pd
+    import numpy as np
+    import swisseph as swe
+    import datetime
+    from scipy.signal import argrelextrema
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    # === Swiss Ephemeris setup
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # === User input
+    col1, col2 = st.columns(2)
+    with col1:
+        mercury_start = st.date_input("Mercury Start", value=datetime.date(2023, 1, 1))
+    with col2:
+        mercury_end = st.date_input("Mercury End", value=datetime.date(2026, 1, 1))
+
+    col3, col4 = st.columns(2)
+    with col3:
+        price_start = st.date_input("Nifty Start", value=datetime.date(2023, 1, 1))
+    with col4:
+        price_end = st.date_input("Nifty End", value=datetime.date.today())
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    # === Mercury speed data
+    def get_mercury_speed_df(start_date, end_date):
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        speeds = []
+        for d in dates:
+            jd = swe.julday(d.year, d.month, d.day)
+            pos, _ = swe.calc_ut(jd, swe.MERCURY)
+            speeds.append(pos[3])
+        return pd.DataFrame({"date": dates, "mercury_speed": speeds})
+
+    def find_tops_bottoms(speed_series):
+        arr = np.array(speed_series)
+        tops = argrelextrema(arr, np.greater)[0]
+        bottoms = argrelextrema(arr, np.less)[0]
+        return tops, bottoms
+
+    df_speed = get_mercury_speed_df(mercury_start, mercury_end)
+    tops, bottoms = find_tops_bottoms(df_speed['mercury_speed'])
+    top_dates = df_speed.iloc[tops]['date']
+    bottom_dates = df_speed.iloc[bottoms]['date']
+
+    # === Fetch Nifty/BankNifty OHLC from NeonDB
+    @st.cache_data
+    def fetch_ohlc(index_name, start, end):
+        query = """
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
+        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
+        return df_ohlc
+
+    df_nifty_filtered = fetch_ohlc(index_choice, price_start, price_end)
+
+    # === Plotting
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.65, 0.35],
+        subplot_titles=("Nifty Candlestick Chart", "Mercury Speed (°/day)")
+    )
+
+    # Row 1: Nifty candlestick chart
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['Date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        showlegend=False
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df_nifty_filtered['Date'],
+        y=[None] * len(df_nifty_filtered),
+        mode='markers',
+        marker=dict(opacity=0),
+        name='Date Only',
+        hovertemplate="%{x|%b %d, %Y}<extra></extra>",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Row 2: Mercury speed line
+    fig.add_trace(go.Scatter(
+        x=df_speed['date'],
+        y=df_speed['mercury_speed'],
+        mode='lines',
+        name="Mercury Speed",
+        line=dict(color='orange'),
+        hovertemplate="%{x|%b %d, %Y}<br>Mercury Speed: %{y:.6f}<extra></extra>"
+    ), row=2, col=1)
+
+    # Tops and bottoms
+    fig.add_trace(go.Scatter(
+        x=top_dates,
+        y=df_speed.iloc[tops]['mercury_speed'],
+        mode='markers',
+        marker=dict(color='red', size=8),
+        name="Speed Tops",
+        hovertemplate="%{x|%b %d, %Y}<br>Top: %{y:.6f}<extra></extra>"
+    ), row=2, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=bottom_dates,
+        y=df_speed.iloc[bottoms]['mercury_speed'],
+        mode='markers',
+        marker=dict(color='blue', size=8),
+        name="Speed Bottoms",
+        hovertemplate="%{x|%b %d, %Y}<br>Bottom: %{y:.6f}<extra></extra>"
+    ), row=2, col=1)
+
+    # Vertical lines for tops and bottoms
+    for d in top_dates:
+        fig.add_vline(x=d, line_color='red', line_dash='dot', opacity=0.5, row=1, col=1)
+        fig.add_vline(x=d, line_color='red', line_dash='dot', opacity=0.5, row=2, col=1)
+
+    for d in bottom_dates:
+        fig.add_vline(x=d, line_color='blue', line_dash='dot', opacity=0.5, row=1, col=1)
+        fig.add_vline(x=d, line_color='blue', line_dash='dot', opacity=0.5, row=2, col=1)
+
+    # Layout
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot')
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("📊 Mercury Speed Table"):
+        st.dataframe(df_speed)
+
+    with st.expander("📈 Nifty Price Table"):
+        st.dataframe(df_nifty_filtered[['Date', 'Open', 'High', 'Low', 'Close']])
+
+elif filter_mode == "Rule 2: Mars–Mercury 59-Min Rule":
+    st.header("📉 Mars–Mercury 59-Minute Speed Differential Rule")
+
+    import pandas as pd
+    import numpy as np
+    import swisseph as swe
+    from datetime import datetime, timedelta
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # === Ephemeris setup
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # === Inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.today())
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    # === Constants
+    TARGET_DIFF = 59 / 60       # 0.9833°
+    TOLERANCE = 4 / 60          # ±4 minutes
+    EXACT_RANGE = (0.98, 0.99)  # for black line
+
+    # === Compute Mars–Mercury speed difference
+    dates = pd.date_range(start=start_date, end=end_date, freq="D")
+    rows = []
+
+    for date in dates:
+        jd = swe.julday(date.year, date.month, date.day)
+        mars_pos, _ = swe.calc_ut(jd, swe.MARS)
+        merc_pos, _ = swe.calc_ut(jd, swe.MERCURY)
+        mars_speed = mars_pos[3]
+        merc_speed = merc_pos[3]
+        diff = abs(merc_speed - mars_speed)
+        is_signal = abs(diff - TARGET_DIFF) <= TOLERANCE
+        is_exact = EXACT_RANGE[0] <= diff <= EXACT_RANGE[1]
+
+        # Format as arcminutes/arcseconds
+        total_minutes = diff * 60
+        deg_min = int(total_minutes)
+        deg_sec = round((total_minutes - deg_min) * 60)
+        time_format = f"{deg_min}′ {deg_sec}″"
+
+        rows.append({
+            "Date": date,
+            "Mars Speed": mars_speed,
+            "Mercury Speed": merc_speed,
+            "Degree Diff": diff,
+            "Diff (Time)": time_format,
+            "Sell Signal": is_signal,
+            "Exact Match": is_exact
+        })
+
+    df = pd.DataFrame(rows)
+    df['Date'] = pd.to_datetime(df['Date'])
+    signal_df = df[df['Sell Signal']]
+
+    st.success(f"📌 Found {len(signal_df)} signal(s)")
+    st.dataframe(signal_df[['Date', 'Mars Speed', 'Mercury Speed', 'Degree Diff', 'Diff (Time)', 'Exact Match']])
+
+    # === Load OHLC from NeonDB
+    @st.cache_data
+    def fetch_ohlc(index_name, start, end):
+        query = """
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
+        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
+        return df_ohlc
+
+    df_nifty_filtered = fetch_ohlc(index_choice, start_date, end_date)
+
+    # === Plotting
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.65, 0.35],
+        vertical_spacing=0.07,
+        subplot_titles=["Nifty Candlestick Chart", "Mars–Mercury Speed Degree Difference"]
+    )
+
+    # Candlestick chart
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['Date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        showlegend=False,
+        increasing=dict(line=dict(color="green", width=1.2), fillcolor="rgba(0,200,0,0.4)"),
+        decreasing=dict(line=dict(color="red", width=1.2), fillcolor="rgba(200,0,0,0.4)")
+    ), row=1, col=1)
+
+    # Transparent scatter (hover only)
+    fig.add_trace(go.Scatter(
+        x=df_nifty_filtered['Date'],
+        y=[None] * len(df_nifty_filtered),
+        mode='markers',
+        marker=dict(opacity=0),
+        hovertemplate="%{x|%b %d, %Y}<extra></extra>",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Speed difference line
+    fig.add_trace(go.Scatter(
+        x=df['Date'],
+        y=df['Degree Diff'],
+        mode='lines',
+        name="Deg. Diff (Mercury–Mars)",
+        line=dict(color="orange", width=2)
+    ), row=2, col=1)
+
+    # 59-min threshold
+    fig.add_hline(
+        y=0.9833,
+        line_color="gray",
+        line_dash="dash",
+        opacity=0.6,
+        row=2, col=1
+    )
+
+    # Signal annotations
+    for _, row_sig in signal_df.iterrows():
+        d = row_sig['Date']
+        color = 'black' if row_sig['Exact Match'] else 'purple'
+        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=1, col=1)
+        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=2, col=1)
+        fig.add_annotation(
+            x=d,
+            y=df_nifty_filtered['High'].max(),
+            text="🔻",
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(color=color, size=14),
+            row=1, col=1
+        )
+
+    # Layout
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis2=dict(
+            title="° Difference",
+            showspikes=True,
+            spikemode='across',
+            spikesnap='cursor',
+            spikedash='dot'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("📋 Full Speed Comparison Table"):
+        st.dataframe(df)
+
+elif filter_mode == "Rule 3: 161° Mars–Mercury Bullish Signal":
+    st.header("📈 Mars–Mercury 161°32′18″ Angular Separation (Bullish Signal)")
+
+    import pandas as pd
+    import numpy as np
+    import swisseph as swe
+    from datetime import datetime, timedelta
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # === Ephemeris config
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # === User input
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.today())
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    # === Constants
+    TARGET_ANGLE = 161 + 32/60 + 18/3600  # 161.5383°
+    ANGLE_TOLERANCE = 0.5
+
+    # === Compute Mars–Mercury angular separation
+    rows = []
+    dates = pd.date_range(start=start_date, end=end_date, freq="D")
+
+    for date in dates:
+        jd = swe.julday(date.year, date.month, date.day)
+        mars_pos, _ = swe.calc_ut(jd, swe.MARS)
+        merc_pos, _ = swe.calc_ut(jd, swe.MERCURY)
+
+        angle_diff = abs((merc_pos[0] - mars_pos[0]) % 360)
+        angle_diff = min(angle_diff, 360 - angle_diff)
+        is_match = abs(angle_diff - TARGET_ANGLE) <= ANGLE_TOLERANCE
+        mars_retro = mars_pos[3] < 0
+
+        deg_whole = int(angle_diff)
+        minutes = (angle_diff - deg_whole) * 60
+        min_whole = int(minutes)
+        seconds = round((minutes - min_whole) * 60)
+        diff_time = f"{deg_whole}° {min_whole}′ {seconds:02d}″"
+
+        rows.append({
+            "Date": date,
+            "Mars°": mars_pos[0],
+            "Mercury°": merc_pos[0],
+            "Angular Diff": round(angle_diff, 3),
+            "Diff (Time)": diff_time,
+            "Mars Retrograde": mars_retro,
+            "Bullish Signal": "🟢" if is_match else ""
+        })
+
+    df = pd.DataFrame(rows)
+    df['Date'] = pd.to_datetime(df['Date'])
+    signal_df = df[df['Bullish Signal'] == "🟢"]
+
+    st.success(f"📌 Found {len(signal_df)} potential bullish signal(s)")
+    st.dataframe(signal_df[['Date', 'Mars°', 'Mercury°', 'Angular Diff', 'Diff (Time)', 'Mars Retrograde', 'Bullish Signal']])
+
+    # === Load OHLC from NeonDB
+    @st.cache_data
+    def fetch_ohlc(index_name, start, end):
+        query = """
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
+        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
+        return df_ohlc
+
+    df_nifty_filtered = fetch_ohlc(index_choice, start_date, end_date)
+
+    # === Plotting
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.07,
+        row_heights=[0.65, 0.35],
+        subplot_titles=["Nifty Candlestick Chart", "Mars–Mercury Angular Separation"]
+    )
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['Date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        increasing=dict(line=dict(color="green", width=1.2), fillcolor="rgba(0,200,0,0.4)"),
+        decreasing=dict(line=dict(color="red", width=1.2), fillcolor="rgba(200,0,0,0.4)"),
+        showlegend=False
+    ), row=1, col=1)
+
+    # Transparent hover layer
+    fig.add_trace(go.Scatter(
+        x=df_nifty_filtered['Date'],
+        y=[None] * len(df_nifty_filtered),
+        mode='markers',
+        marker=dict(opacity=0),
+        hovertemplate="%{x|%b %d, %Y}<extra></extra>",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Angle diff line
+    fig.add_trace(go.Scatter(
+        x=df['Date'],
+        y=df['Angular Diff'],
+        mode='lines',
+        name="Mars–Mercury Angle",
+        line=dict(color="orange", width=2)
+    ), row=2, col=1)
+
+    # Signal markers
+    for _, row_sig in signal_df.iterrows():
+        d = row_sig['Date']
+        fig.add_vline(x=d, line_color='green', line_dash='dot', opacity=0.8, row=1, col=1)
+        fig.add_vline(x=d, line_color='green', line_dash='dot', opacity=0.8, row=2, col=1)
+        fig.add_annotation(
+            x=d,
+            y=df_nifty_filtered['High'].max(),
+            text="🟢",
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+            font=dict(color="green", size=14),
+            row=1, col=1
+        )
+
+    # Layout
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis2=dict(
+            title="Angular Separation (°)",
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("📋 Full Angular Separation Table"):
+        st.dataframe(df)
+
+elif filter_mode == "test Mars–Mercury 59-Min Rule":
+    st.header("📉 Mars–Mercury 59-Minute Speed Differential Rule (Fast – Using Excel)")
+
+    import pandas as pd
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    from datetime import datetime
+
+    # === Inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.today())
+
+    # === Load precomputed speed difference Excel
+    @st.cache_data
+    def load_speed_data():
+        df = pd.read_excel("mars_mercury_daily_speed_diff.xlsx")
+        df['Date'] = pd.to_datetime(df['Date'])
+        return df
+
+    df = load_speed_data()
+    df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
+    signal_df = df[df['Sell Signal']]
+
+    # === Load Nifty OHLC data
+    df_nifty = pd.read_excel("nifty.xlsx")
+    df_nifty['Date'] = pd.to_datetime(df_nifty['Date'], dayfirst=True)
+    df_nifty['date'] = df_nifty['Date']
+    df_nifty_filtered = df_nifty[
+        (df_nifty['date'] >= pd.to_datetime(start_date)) &
+        (df_nifty['date'] <= pd.to_datetime(end_date))
+    ]
+
+    # === Show Data
+    st.subheader("📋 Daily Degree Difference Between Mercury & Mars")
+    st.dataframe(df[['Date', 'Mars Speed', 'Mercury Speed', 'Degree Diff', 'Diff (Time)']])
+
+    st.success(f"📌 Found {len(signal_df)} signal(s)")
+    st.dataframe(signal_df[['Date', 'Mars Speed', 'Mercury Speed', 'Degree Diff', 'Diff (Time)', 'Exact Match']])
+
+    # === Plotting ===
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.65, 0.35],
+        vertical_spacing=0.07,
+        subplot_titles=["Nifty Candlestick Chart", "Mars–Mercury Speed Degree Difference"]
+    )
+
+    # Candlestick Chart (Row 1)
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        showlegend=False,
+        increasing=dict(line=dict(color="green", width=1.2), fillcolor="rgba(0,200,0,0.4)"),
+        decreasing=dict(line=dict(color="red", width=1.2), fillcolor="rgba(200,0,0,0.4)")
+    ), row=1, col=1)
+
+    # Hover Sync
+    fig.add_trace(go.Scatter(
+        x=df_nifty_filtered['date'],
+        y=[None] * len(df_nifty_filtered),
+        mode='markers',
+        marker=dict(opacity=0),
+        hovertemplate="%{x|%b %d, %Y}<extra></extra>",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Degree Difference Line (Row 2)
+    fig.add_trace(go.Scatter(
+        x=df['Date'],
+        y=df['Degree Diff'],
+        mode='lines',
+        name="Deg. Diff (Merc–Mars)",
+        line=dict(color="orange", width=2)
+    ), row=2, col=1)
+
+    # Threshold Line
+    fig.add_hline(
+        y=0.9833,
+        line_color="gray",
+        line_dash="dash",
+        opacity=0.6,
+        row=2, col=1
+    )
+
+    # === Add Vertical Lines & Annotations
+    for _, row_sig in signal_df.iterrows():
+        d = row_sig['Date']
+        color = 'black' if row_sig['Exact Match'] else 'purple'
+
+        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=1, col=1)
+        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=2, col=1)
+
+        try:
+            high_val = df_nifty_filtered['High'].max()
+            fig.add_annotation(
+                x=d,
+                y=high_val,
+                text="🔻",
+                showarrow=False,
+                xanchor="center",
+                yanchor="bottom",
+                font=dict(color=color, size=14),
+                row=1, col=1
+            )
+        except:
+            pass
+
+    # === Layout
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        ),
+        yaxis=dict(
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        ),
+        xaxis2=dict(
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        ),
+        yaxis2=dict(
+            title="° Difference",
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("📋 Full Speed Comparison Table"):
+        st.dataframe(df)
+
+elif filter_mode == "Rule 4: Mercury Retrograde Echo":
+    st.header("🔁 Mercury Retrograde Echo Rule")
+
+    import swisseph as swe
+    import pandas as pd
+    from datetime import datetime, timedelta
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # Swiss Ephemeris
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
+
+    # Input: Dates + Index
+    col1, col2 = st.columns(2)
+    with col1:
+        retro_start = st.date_input("Retrograde Scan Start", value=datetime(2010, 1, 1))
+    with col2:
+        retro_end = st.date_input("Retrograde Scan End", value=datetime(2025, 12, 31))
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    # === Retrograde detection
+    def get_mercury_retrograde_dates(start, end):
+        step = timedelta(days=1)
+        current = start
+        retro_dates = []
+
+        while current <= end:
+            jd0 = swe.julday(current.year, current.month, current.day)
+            jd1 = swe.julday((current + step).year, (current + step).month, (current + step).day)
+
+            spd0 = swe.calc_ut(jd0, swe.MERCURY)[0][3]
+            spd1 = swe.calc_ut(jd1, swe.MERCURY)[0][3]
+
+            if spd0 > 0 and spd1 < 0:
+                lon = swe.calc_ut(jd1, swe.MERCURY)[0][0]
+                sign = int(lon / 30)
+                deg = int(lon % 30)
+                min = int(((lon % 30) - deg) * 60)
+
+                zodiac = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+                          "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"][sign]
+
+                retro_dates.append({
+                    "Retro Date": current + step,
+                    "Longitude": f"{deg}°{min:02d}' {zodiac}",
+                    "Echo Date": (current + step + timedelta(days=365))
+                })
+
+            current += step
+
+        return pd.DataFrame(retro_dates)
+
+    df_retro = get_mercury_retrograde_dates(retro_start, retro_end)
+
+    st.subheader("🪞 Mercury Retrograde Dates & Echo Points")
+    st.dataframe(df_retro)
+
+    # === Load OHLC from DB
+    @st.cache_data
+    def fetch_ohlc(index_name):
+        query = f"""
+            SELECT "Date", "Open", "High", "Low", "Close"
+            FROM ohlc_index
+            WHERE index_name = %s
+            ORDER BY "Date"
+        """
+        df = pd.read_sql(query, engine, params=(index_name,))
+        df['Date'] = pd.to_datetime(df['Date'])
+        df['date'] = df['Date']
+        return df
+
+    df_nifty = fetch_ohlc(index_choice)
+
+    echo_dates = df_retro['Echo Date']
+    matched_nifty = df_nifty[df_nifty['date'].isin(echo_dates)].copy()
+
+    # === Return logic
+    def compute_trend(df, date, days=3):
+        df = df.copy()
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.set_index('date')
+        df.sort_index(inplace=True)
+
+        date = pd.to_datetime(date)
+        available_dates = df.index[df.index >= date]
+        if available_dates.empty:
+            return "None"
+        date = available_dates[0]
+
+        future_target = date + timedelta(days=days)
+        future_dates = df.index[df.index >= future_target]
+        if future_dates.empty:
+            return "None"
+        future_date = future_dates[0]
+
+        try:
+            close_today = df.loc[date, 'Close']
+            close_future = df.loc[future_date, 'Close']
+            pct_change = ((close_future - close_today) / close_today) * 100
+            if pct_change > 0.5:
+                return "Up 🔺"
+            elif pct_change < -0.5:
+                return "Down 🔻"
+            else:
+                return "Neutral"
+        except:
+            return "None"
+
+    # === Analyze each retro → echo
+    result_rows = []
+    for _, row in df_retro.iterrows():
+        retro_date = row['Retro Date']
+        echo_date = row['Echo Date']
+
+        retro_trend = compute_trend(df_nifty, retro_date)
+        echo_trend = compute_trend(df_nifty, echo_date)
+
+        if retro_trend == "Up 🔺":
+            predicted = "Down 🔻"
+        elif retro_trend == "Down 🔻":
+            predicted = "Up 🔺"
+        else:
+            predicted = "Neutral"
+
+        result_rows.append({
+            "Retro Date": retro_date,
+            "Echo Date": echo_date,
+            "Retro Trend": retro_trend,
+            "Predicted Echo Reaction": predicted,
+            "Actual Echo Trend": echo_trend
+        })
+
+    df_analysis = pd.DataFrame(result_rows)
+
+    st.subheader("🔍 Echo Reversal Prediction Table")
+    st.dataframe(df_analysis)
+
+    # === Plotting chart
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=df_nifty['date'],
+        open=df_nifty['Open'],
+        high=df_nifty['High'],
+        low=df_nifty['Low'],
+        close=df_nifty['Close'],
+        name="Nifty",
+        increasing=dict(line=dict(color="green"), fillcolor="rgba(0,200,0,0.4)"),
+        decreasing=dict(line=dict(color="red"), fillcolor="rgba(200,0,0,0.4)")
+    ))
+
+    for _, row in df_analysis.iterrows():
+        echo_date = row['Echo Date']
+        trend_symbol = row['Actual Echo Trend']
+        symbol = trend_symbol if trend_symbol in ["Up 🔺", "Down 🔻"] else "🔁"
+
+        fig.add_vline(x=echo_date, line_color="blue", line_dash="dot", opacity=0.6)
+        fig.add_annotation(
+            x=echo_date,
+            y=df_nifty['High'].max(),
+            text=symbol,
+            showarrow=False,
+            yanchor="bottom",
+            font=dict(color="blue", size=14)
+        )
+
+    max_date = max(df_nifty['date'].max(), pd.to_datetime(df_retro['Echo Date'].max()))
+    min_date = min(df_nifty['date'].min(), pd.to_datetime(df_retro['Echo Date'].min()))
+
+    fig.update_layout(
+        height=600,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        title="Nifty Chart with Mercury Echo Dates",
+        xaxis=dict(
+            range=[min_date - timedelta(days=5), max_date + timedelta(days=10)],
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        ),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot')
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+elif filter_mode == "Rule 13: Neptune Log Distance":
+    st.header("📘 Neptune Log Distance Differential Rule (Precomputed Excel)")
+
+    import pandas as pd
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    from datetime import datetime
+
+    # Raphael's key delta values
+    KEY_NUMBERS = [-2412, -2340, -1800, -900, 0, 900, 1800, 2340, 2412]
+
+    # === Date range input
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2000, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime(2025, 12, 31))
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    # === Load Neptune Δ log distance data from Excel
+    df = pd.read_excel("neptune_delta.xlsx")
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
+
+    # Signal detection
+    df['Signal'] = df['Delta'].apply(lambda x: any(abs(x - key) <= 1 for key in KEY_NUMBERS))
+    signal_df = df[df['Signal'] == True]
+
+    # === Load OHLC from NeonDB
+    @st.cache_data
+    def fetch_ohlc(index_name, start, end):
+        query = """
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
+        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
+        return df_ohlc
+
+    df_nifty_filtered = fetch_ohlc(index_choice, start_date, end_date)
+
+    # === Results
+    st.success(f"📌 Found {len(signal_df)} signal(s) matching Raphael's key levels.")
+    st.subheader("📋 Neptune Daily Log Distance Differential Table")
     st.dataframe(df)
 
+    # === Plotting
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.65, 0.35],
+        vertical_spacing=0.07,
+        subplot_titles=["Nifty Candlestick Chart", "Neptune Δ log(True Distance)"]
+    )
+
+    # Nifty chart (from DB)
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['Date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Neptune delta line
+    fig.add_trace(go.Scatter(
+        x=df['Date'],
+        y=df['Delta'],
+        mode='lines',
+        name="Neptune Δ Log Distance",
+        line=dict(color='blue')
+    ), row=2, col=1)
+
+    # Add signal markers
+    for _, row in signal_df.iterrows():
+        fig.add_vline(x=row['Date'], line_color='red', line_dash='dot', opacity=0.7, row=1, col=1)
+        fig.add_vline(x=row['Date'], line_color='red', line_dash='dot', opacity=0.7, row=2, col=1)
+
+    # Layout
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis2=dict(
+            title="Δ log(True Distance)",
+            showspikes=True,
+            spikemode='across',
+            spikesnap='cursor',
+            spikedash='dot'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+elif filter_mode == "Monthly OHLC Viewer":
+    st.header("📆 Monthly OHLC & Daily Breakdown (Year-wise View)")
+
+    import pandas as pd
+    import plotly.graph_objects as go
+    from datetime import timedelta
+    from sqlalchemy import create_engine
+
+    # === Load Tithi data from Excel
+    df_tithi = pd.read_excel("tithi.xlsx")
+    df_tithi['Start_IST'] = pd.to_datetime(df_tithi['Start_IST'])
+    df_tithi['End_IST'] = pd.to_datetime(df_tithi['End_IST'])
+    sunrise_time = timedelta(hours=6, minutes=0)
+
+    def get_tithi_marker_dates(df_tithi):
+        marker_dates = []
+        for _, row in df_tithi.iterrows():
+            tithi = row['Tithi']
+            start = row['Start_IST']
+            end = row['End_IST']
+            day_cursor = start.normalize()
+            while day_cursor <= end.normalize():
+                sunrise_dt = day_cursor + sunrise_time
+                if start <= sunrise_dt <= end:
+                    marker_dates.append({"Date": sunrise_dt.date(), "Tithi": tithi})
+                    break
+                day_cursor += timedelta(days=1)
+        return pd.DataFrame(marker_dates)
+
+    df_tithi_markers = get_tithi_marker_dates(df_tithi)
+
+    # === Month selection
+    month_map = {
+        1: "January", 2: "February", 3: "March", 4: "April",
+        5: "May", 6: "June", 7: "July", 8: "August",
+        9: "September", 10: "October", 11: "November", 12: "December"
+    }
+
+    selected_months = st.multiselect("Select Month(s):", list(month_map.values()), default=["January"])
+    selected_month_nums = [k for k, v in month_map.items() if v in selected_months]
+
+    # === Load OHLC from NeonDB (PostgreSQL)
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    @st.cache_data
+    def load_ohlc_from_db(index_name):
+        query = f"""
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s
+            ORDER BY "Date"
+        """
+        df = pd.read_sql(query, engine, params=(index_name,))
+        df['Date'] = pd.to_datetime(df['Date'])
+        df['Year'] = df['Date'].dt.year
+        df['Month'] = df['Date'].dt.month
+        df['MonthName'] = df['Date'].dt.strftime("%B")
+        return df
+
+    df_ohlc = load_ohlc_from_db(index_choice)
+
+    if selected_months:
+        df_filtered = df_ohlc[df_ohlc['Month'].isin(selected_month_nums)]
+
+        for month_num in selected_month_nums:
+            month_name = month_map[month_num]
+            df_month = df_filtered[df_filtered['Month'] == month_num]
+
+            st.subheader(f"📅 {month_name}")
+
+            years = sorted(df_month['Year'].unique())
+            for year in years:
+                df_year_month = df_month[df_month['Year'] == year]
+                if df_year_month.empty:
+                    continue
+
+                df_year_month_sorted = df_year_month.sort_values('Date')
+                open_price = df_year_month_sorted.iloc[0]['Open']
+                close_price = df_year_month_sorted.iloc[-1]['Close']
+                high_price = df_year_month_sorted['High'].max()
+                low_price = df_year_month_sorted['Low'].min()
+                pct_change = ((close_price - open_price) / open_price) * 100
+
+                # Monthly candle
+                fig_month = go.Figure()
+                fig_month.add_trace(go.Candlestick(
+                    x=[f"{month_name} {year}"],
+                    open=[open_price],
+                    high=[high_price],
+                    low=[low_price],
+                    close=[close_price],
+                    increasing=dict(line=dict(color="green")),
+                    decreasing=dict(line=dict(color="red"))
+                ))
+                fig_month.update_layout(
+                    title=f"Monthly Candle: {month_name} {year}",
+                    xaxis_title="Month",
+                    yaxis_title="Price",
+                    xaxis_rangeslider_visible=False,
+                    height=700,
+                    annotations=[
+                        dict(
+                            x=0,
+                            y=high_price,
+                            xref="x",
+                            yref="y",
+                            text=f"O: {open_price:.2f}, H: {high_price:.2f}, L: {low_price:.2f}, C: {close_price:.2f}, %Chg: {pct_change:.2f}%",
+                            showarrow=False,
+                            xanchor='left',
+                            yanchor='bottom',
+                            font=dict(size=17)
+                        )
+                    ]
+                )
+
+                # Daily candles
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=df_year_month_sorted['Date'],
+                    open=df_year_month_sorted['Open'],
+                    high=df_year_month_sorted['High'],
+                    low=df_year_month_sorted['Low'],
+                    close=df_year_month_sorted['Close'],
+                    increasing=dict(line=dict(color="green")),
+                    decreasing=dict(line=dict(color="red")),
+                    name=f"{month_name} {year}"
+                ))
+
+                # Tithi markers
+                marker_subset = df_tithi_markers[
+                    (df_tithi_markers['Date'] >= df_year_month_sorted['Date'].min().date()) &
+                    (df_tithi_markers['Date'] <= df_year_month_sorted['Date'].max().date())
+                ]
+                for _, mark in marker_subset.iterrows():
+                    fig.add_vline(
+                        x=pd.to_datetime(mark['Date']),
+                        line_color="blue" if mark['Tithi'] == "Poornima" else "purple",
+                        line_dash="dot",
+                        opacity=0.6
+                    )
+                    fig.add_annotation(
+                        x=pd.to_datetime(mark['Date']),
+                        y=df_year_month_sorted['High'].max(),
+                        text=mark['Tithi'],
+                        showarrow=False,
+                        yanchor="bottom",
+                        font=dict(size=12, color="blue" if mark['Tithi'] == "Poornima" else "purple")
+                    )
+
+                fig.update_layout(
+                    title=f"Daily Chart for {month_name} {year}",
+                    xaxis_title="Date",
+                    yaxis_title="Price",
+                    xaxis_rangeslider_visible=False,
+                    height=400
+                )
+
+                st.markdown(f"## 📊 {month_name} {year}")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown(f"**Monthly Candle: {month_name} {year}**")
+                    st.plotly_chart(fig_month, use_container_width=True)
+
+                with col2:
+                    st.markdown(f"**Daily Chart for {month_name} {year}**")
+                    st.plotly_chart(fig, use_container_width=True)
+
+elif filter_mode == "Rule 13: Planetary Log Distance":
+    st.header("🪐 Planetary Log Distance")
+
+    from skyfield.api import load
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # Raphael's key delta values
+    KEY_NUMBERS = [-2412, -2340, -1800, -900, 0, 900, 1800, 2340, 2412]
+
+    # Planet selection
+    planet_map = {
+        "Mercury": "mercury",
+        "Venus": "venus",
+        "Earth": "earth",
+        "Mars": "mars",
+        "Jupiter": "jupiter barycenter",
+        "Saturn": "saturn barycenter",
+        "Uranus": "uranus barycenter",
+        "Neptune": "neptune barycenter",
+        "Pluto": "pluto barycenter"
+    }
+
+    planet_name = st.selectbox("Select Planet:", list(planet_map.keys()), index=7)
+
+    # Date inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2000, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime(2025, 12, 31))
+
+    # Load ephemeris and timescale
+    ts = load.timescale()
+    eph = load('de421.bsp')
+
+    earth = eph["earth"]
+    body = eph[planet_map[planet_name]]
+
+    # Date range
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    log_values = []
+    distances = []
+
+    for date in dates:
+        t = ts.utc(date.year, date.month, date.day)
+        astrometric = earth.at(t).observe(body).apparent()
+        distance_au = astrometric.distance().au
+        distances.append(distance_au)
+        log_scaled = int(round(np.log10(distance_au) * 1e7))  # Raphael-style format
+        log_values.append(log_scaled)
+
+    df = pd.DataFrame({
+        'Date': dates,
+        'Distance_AU': distances,
+        'Log_Distance': log_values
+    })
+    df['Delta'] = df['Log_Distance'].diff().fillna(0).astype(int)
+    df['Signal'] = df['Delta'].apply(lambda x: any(abs(x - k) <= 2 for k in KEY_NUMBERS))
+
+    signal_df = df[df['Signal']]
+
+    import sqlalchemy
+
+    # Optional: dropdown to choose index
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+
+    @st.cache_data
+    def fetch_ohlc_from_db(index_name, start, end):
+        query = f"""
+            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df = pd.read_sql(query, engine, params=(index_name, start, end))
+        df['Date'] = pd.to_datetime(df['Date'])
+        return df
+
+    df_nifty_filtered = fetch_ohlc_from_db(index_choice, start_date, end_date)
 
 
+    st.success(f"📌 Found {len(signal_df)} signal(s) based on {planet_name}'s log distance differential.")
+
+    st.subheader("📋 Log Distance Differential Table")
+    st.dataframe(df)
+
+    # === Plotting
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.65, 0.35],
+        vertical_spacing=0.07,
+        subplot_titles=["Nifty Candlestick Chart", f"{planet_name} Δ log₁₀(Distance) × 10⁷"]
+    )
+
+    # Nifty Candlestick
+    fig.add_trace(go.Candlestick(
+        x=df_nifty_filtered['Date'],
+        open=df_nifty_filtered['Open'],
+        high=df_nifty_filtered['High'],
+        low=df_nifty_filtered['Low'],
+        close=df_nifty_filtered['Close'],
+        name="Nifty",
+        showlegend=False
+    ), row=1, col=1)
+
+    # Planetary Delta Line
+    fig.add_trace(go.Scatter(
+        x=df['Date'],
+        y=df['Delta'],
+        mode='lines',
+        name=f"{planet_name} Δ log₁₀(Distance) × 10⁷",
+        line=dict(color='blue')
+    ), row=2, col=1)
+
+    # Signal markers
+    for _, row in signal_df.iterrows():
+        fig.add_vline(x=row['Date'], line_color='red', line_dash='dot', opacity=0.7, row=1, col=1)
+        fig.add_vline(x=row['Date'], line_color='red', line_dash='dot', opacity=0.7, row=2, col=1)
+
+    fig.update_layout(
+        height=800,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
+        yaxis2=dict(
+            title="Δ log₁₀(Distance) × 10⁷",
+            showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
