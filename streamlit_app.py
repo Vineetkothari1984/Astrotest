@@ -4590,7 +4590,7 @@ elif filter_mode == "Rule 3: 161° Mars–Mercury Bullish Signal":
     # === User input
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
+        start_date = st.date_input("Start Date", value=datetime(2010, 1, 1))
     with col2:
         end_date = st.date_input("End Date", value=datetime.today())
 
