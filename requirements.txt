@@ -6,4 +6,5 @@ plotly
 sqlalchemy
 psycopg2-binary
 pyswisseph
-
+skyfield
+scipy
