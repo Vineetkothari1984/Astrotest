@@ -23,7 +23,6 @@ USER_CREDENTIALS = {
     "admin": hash_password("admin123"),
     "vin": hash_password("vin69"),
     "transleads": hash_password("leads27"),
-    "mahesh": hash_password("mahesh@123")
 }
 
 # Check login status
@@ -771,27 +770,57 @@ st.html("""
 </style>
 """)
 
+# === Secure Sidebar Section Access ===
+allowed_users_for_astro = ["admin", "vin"]
+
+# Define full list of all sidebar sections
+all_sections = [
+    "Company Overview", 
+    "Numerology Date Filter", 
+    "Filter by Sector/Symbol", 
+    "Filter by Numerology",
+    "Name Numerology", 
+    "View Nifty/BankNifty OHLC", 
+    "Equinox",
+    "Moon",
+    "Mercury",
+    "Mercury Combust",
+    "Sun Number Dates",
+    "Panchak",
+    "Range",
+    "Daily Report",
+    "Navamasa",
+    "Planetary Conjunctions",
+    "Planetary Report",
+    "Moon–Mercury Aspects",
+    "Planetary Aspects",
+    "Swapt Nadi Chakra",
+    "Planetary Ingress",
+    "AOT Monthly Calendar"
+]
+
+# Protected advanced astro sections
+astro_protected = [
+    "Navamasa",
+    "Planetary Conjunctions",
+    "Planetary Report",
+    "Moon–Mercury Aspects",
+    "Planetary Aspects",
+    "Swapt Nadi Chakra",
+    "Planetary Ingress",
+    "AOT Monthly Calendar"
+]
+
+# Final sidebar section list depending on user
+if st.session_state.username in allowed_users_for_astro:
+    available_sections = all_sections
+else:
+    available_sections = [s for s in all_sections if s not in astro_protected]
+
+
 # === Toggle between filtering methods ===
 st.sidebar.title("📊 Navigation")
-filter_mode = st.sidebar.radio(
-    "Choose Filter Mode:", 
-    [
-        "Company Overview", 
-        "Numerology Date Filter", 
-        "Filter by Sector/Symbol", 
-        "Filter by Numerology",
-        "Name Numerology", 
-        "View Nifty/BankNifty OHLC", 
-        "Equinox",
-        "Moon",
-        "Mercury",
-        "Mercury Combust",
-        "Sun Number Dates",
-        "Panchak",
-        "Range",
-        "Daily Report",
-        "Monthly OHLC Viewer"
-        ])
+filter_mode = st.sidebar.radio("Choose Filter Mode:", available_sections)
 
 if filter_mode == "Filter by Sector/Symbol":
     # === Sector Filter ===
@@ -2697,6 +2726,9 @@ elif filter_mode == "Daily Report":
     st.markdown(html, unsafe_allow_html=True)
 
 if filter_mode == "Navamasa":
+    if st.session_state.username not in allowed_users_for_astro:
+        st.stop()
+
     st.header("🌌 Navamasa (D1 & D9 Planetary Chart)")
 
     import swisseph as swe
@@ -4188,157 +4220,9 @@ elif filter_mode == "AOT Monthly Calendar":
     html = df.to_html()
     st.markdown(f'<div class="scroll-table">{html}</div>', unsafe_allow_html=True)
 
+    st.dataframe(df)
 
 
-elif filter_mode == "Monthly OHLC Viewer":
-    st.header("📆 Monthly OHLC & Daily Breakdown (Year-wise View)")
 
-    import pandas as pd
-    import plotly.graph_objects as go
-    from datetime import timedelta
 
-    # === Load data
-    df_nifty = pd.read_excel("nifty.xlsx")
-    df_nifty['Date'] = pd.to_datetime(df_nifty['Date'], dayfirst=True)
-    df_nifty['Year'] = df_nifty['Date'].dt.year
-    df_nifty['Month'] = df_nifty['Date'].dt.month
-    df_nifty['MonthName'] = df_nifty['Date'].dt.strftime("%B")
-
-    # === Load Tithi data
-    df_tithi = pd.read_excel("tithi.xlsx")
-    df_tithi['Start_IST'] = pd.to_datetime(df_tithi['Start_IST'])
-    df_tithi['End_IST'] = pd.to_datetime(df_tithi['End_IST'])
-    sunrise_time = timedelta(hours=6, minutes=0)
-
-    def get_tithi_marker_dates(df_tithi):
-        marker_dates = []
-        for _, row in df_tithi.iterrows():
-            tithi = row['Tithi']
-            start = row['Start_IST']
-            end = row['End_IST']
-            day_cursor = start.normalize()
-            while day_cursor <= end.normalize():
-                sunrise_dt = day_cursor + sunrise_time
-                if start <= sunrise_dt <= end:
-                    marker_dates.append({"Date": sunrise_dt.date(), "Tithi": tithi})
-                    break
-                day_cursor += timedelta(days=1)
-        return pd.DataFrame(marker_dates)
-
-    df_tithi_markers = get_tithi_marker_dates(df_tithi)
-
-    # === Month selection
-    month_map = {1: "January", 2: "February", 3: "March", 4: "April",
-                 5: "May", 6: "June", 7: "July", 8: "August",
-                 9: "September", 10: "October", 11: "November", 12: "December"}
-
-    selected_months = st.multiselect("Select Month(s):", list(month_map.values()), default=["January"])
-    selected_month_nums = [k for k, v in month_map.items() if v in selected_months]
-
-    if selected_months:
-        df_filtered = df_nifty[df_nifty['Month'].isin(selected_month_nums)]
-
-        for month_num in selected_month_nums:
-            month_name = month_map[month_num]
-            df_month = df_filtered[df_filtered['Month'] == month_num]
-
-            st.subheader(f"📅 {month_name}")
-
-            years = sorted(df_month['Year'].unique())
-            for year in years:
-                df_year_month = df_month[df_month['Year'] == year]
-                if df_year_month.empty:
-                    continue
-
-                df_year_month_sorted = df_year_month.sort_values('Date')
-                open_price = df_year_month_sorted.iloc[0]['Open']
-                close_price = df_year_month_sorted.iloc[-1]['Close']
-                high_price = df_year_month_sorted['High'].max()
-                low_price = df_year_month_sorted['Low'].min()
-                pct_change = ((close_price - open_price) / open_price) * 100
-
-                # === Monthly candle
-                fig_month = go.Figure()
-                fig_month.add_trace(go.Candlestick(
-                    x=[f"{month_name} {year}"],
-                    open=[open_price],
-                    high=[high_price],
-                    low=[low_price],
-                    close=[close_price],
-                    increasing=dict(line=dict(color="green")),
-                    decreasing=dict(line=dict(color="red"))
-                ))
-                fig_month.update_layout(
-                    title=f"Monthly Candle: {month_name} {year}",
-                    xaxis_title="Month",
-                    yaxis_title="Price",
-                    xaxis_rangeslider_visible=False,
-                    height=700,
-                    annotations=[
-                        dict(
-                            x=0,
-                            y=high_price,
-                            xref="x",
-                            yref="y",
-                            text=f"O: {open_price:.2f}, H: {high_price:.2f}, L: {low_price:.2f}, C: {close_price:.2f}, %Chg: {pct_change:.2f}%",
-                            showarrow=False,
-                            xanchor='left',
-                            yanchor='bottom',
-                            font=dict(size=17)
-                        )
-                    ]
-                )
-
-                # === Daily candles
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(
-                    x=df_year_month_sorted['Date'],
-                    open=df_year_month_sorted['Open'],
-                    high=df_year_month_sorted['High'],
-                    low=df_year_month_sorted['Low'],
-                    close=df_year_month_sorted['Close'],
-                    increasing=dict(line=dict(color="green")),
-                    decreasing=dict(line=dict(color="red")),
-                    name=f"{month_name} {year}"
-                ))
-
-                # === Add Tithi markers
-                marker_subset = df_tithi_markers[
-                    (df_tithi_markers['Date'] >= df_year_month_sorted['Date'].min().date()) &
-                    (df_tithi_markers['Date'] <= df_year_month_sorted['Date'].max().date())
-                ]
-                for _, mark in marker_subset.iterrows():
-                    fig.add_vline(
-                        x=pd.to_datetime(mark['Date']),
-                        line_color="blue" if mark['Tithi'] == "Poornima" else "purple",
-                        line_dash="dot",
-                        opacity=0.6
-                    )
-                    fig.add_annotation(
-                        x=pd.to_datetime(mark['Date']),
-                        y=df_year_month_sorted['High'].max(),
-                        text=mark['Tithi'],
-                        showarrow=False,
-                        yanchor="bottom",
-                        font=dict(size=12, color="blue" if mark['Tithi'] == "Poornima" else "purple")
-                    )
-
-                fig.update_layout(
-                    title=f"Daily Chart for {month_name} {year}",
-                    xaxis_title="Date",
-                    yaxis_title="Price",
-                    xaxis_rangeslider_visible=False,
-                    height=400
-                )
-
-                st.markdown(f"## 📊 {month_name} {year}")
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.markdown(f"**Monthly Candle: {month_name} {year}**")
-                    st.plotly_chart(fig_month, use_container_width=True)
-
-                with col2:
-                    st.markdown(f"**Daily Chart for {month_name} {year}**")
-                    st.plotly_chart(fig, use_container_width=True)
 
