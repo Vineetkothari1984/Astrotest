@@ -5358,6 +5358,16 @@ elif filter_mode == "Rule 13: All Planets Log Distance":
     with col2:
         end_date = st.date_input("End Date", value=datetime(2025, 12, 31))
 
+    TOLERANCE = st.number_input(
+    "Set Tolerance (e.g. 0.01 = ±0.01 arcsec)",
+    min_value=0.0,
+    max_value=5.0,
+    value=0.01,
+    step=0.01,
+    format="%.4f"
+)
+
+
     # Load ephemeris and timescale
     ts = load.timescale()
     eph = load('de421.bsp')
@@ -5384,7 +5394,7 @@ elif filter_mode == "Rule 13: All Planets Log Distance":
         'Log_Distance': log_values
     })
     df['Delta'] = df['Log_Distance'].diff().fillna(0).astype(int)
-    df['Signal'] = df['Delta'].apply(lambda x: any(abs(x - k) <= 2 for k in KEY_NUMBERS))
+    df['Signal'] = df['Delta'].apply(lambda x: any(abs(x - k) <= TOLERANCE for k in KEY_NUMBERS))
 
     signal_df = df[df['Signal']]
 
@@ -5866,4 +5876,3 @@ elif filter_mode == "Rule 23: Saturn Latitude Differential":
     )
 
     st.plotly_chart(fig, use_container_width=True)
-
