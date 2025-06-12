@@ -5323,7 +5323,7 @@ elif filter_mode == "Monthly OHLC Viewer":
                     st.markdown(f"**Daily Chart for {month_name} {year}**")
                     st.plotly_chart(fig, use_container_width=True)
 
-elif filter_mode == "Rule 13: All Planetd Log Distance":
+elif filter_mode == "Rule 13: All Planets Log Distance":
     st.header("🪐 Planetary Log Distance")
 
     from skyfield.api import load
