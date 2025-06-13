@@ -806,13 +806,13 @@ bayers_rule_sections = [
     "Rule 1: Speed of Mercury",
     "Rule 2: Mars–Mercury 59-Min Rule",
     "Rule 3: 161° Mars–Mercury Bullish Signal",
-    "test Mars–Mercury 59-Min Rule",
     "Rule 4: Mercury Retrograde Echo",
     "Rule 13: Neptune Log Distance",
     "Monthly OHLC Viewer",
     "Rule 13: All Planets Log Distance",
     "Rule 23: Saturn Latitude Differential",
     "Rule 27: Mercury's Speed Triggers (59′ and 1°58′)",
+    "Rule 22: Mercury Retrograde Conjunctions"
 ]
 
 # === Sidebar Title
@@ -4404,175 +4404,6 @@ elif filter_mode == "Rule 1: Speed of Mercury":
     with st.expander("📈 Nifty Price Table"):
         st.dataframe(df_nifty_filtered[['Date', 'Open', 'High', 'Low', 'Close']])
 
-elif filter_mode == "Rule 2: Mars–Mercury 59-Min Rule":
-    st.header("📉 Mars–Mercury 59-Minute Speed Differential Rule")
-
-    import pandas as pd
-    import numpy as np
-    import swisseph as swe
-    from datetime import datetime, timedelta
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    # === Ephemeris setup
-    swe.set_ephe_path("C:/ephe")
-    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-
-    # === Inputs
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
-    with col2:
-        end_date = st.date_input("End Date", value=datetime.today())
-
-    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
-
-    # === Constants
-    TARGET_DIFF = 59 / 60       # 0.9833°
-    TOLERANCE = 4 / 60          # ±4 minutes
-    EXACT_RANGE = (0.98, 0.99)  # for black line
-
-    # === Compute Mars–Mercury speed difference
-    dates = pd.date_range(start=start_date, end=end_date, freq="D")
-    rows = []
-
-    for date in dates:
-        jd = swe.julday(date.year, date.month, date.day)
-        mars_pos, _ = swe.calc_ut(jd, swe.MARS)
-        merc_pos, _ = swe.calc_ut(jd, swe.MERCURY)
-        mars_speed = mars_pos[3]
-        merc_speed = merc_pos[3]
-        diff = abs(merc_speed - mars_speed)
-        is_signal = abs(diff - TARGET_DIFF) <= TOLERANCE
-        is_exact = EXACT_RANGE[0] <= diff <= EXACT_RANGE[1]
-
-        # Format as arcminutes/arcseconds
-        total_minutes = diff * 60
-        deg_min = int(total_minutes)
-        deg_sec = round((total_minutes - deg_min) * 60)
-        time_format = f"{deg_min}′ {deg_sec}″"
-
-        rows.append({
-            "Date": date,
-            "Mars Speed": mars_speed,
-            "Mercury Speed": merc_speed,
-            "Degree Diff": diff,
-            "Diff (Time)": time_format,
-            "Sell Signal": is_signal,
-            "Exact Match": is_exact
-        })
-
-    df = pd.DataFrame(rows)
-    df['Date'] = pd.to_datetime(df['Date'])
-    signal_df = df[df['Sell Signal']]
-
-    st.success(f"📌 Found {len(signal_df)} signal(s)")
-    st.dataframe(signal_df[['Date', 'Mars Speed', 'Mercury Speed', 'Degree Diff', 'Diff (Time)', 'Exact Match']])
-
-    # === Load OHLC from NeonDB
-    @st.cache_data
-    def fetch_ohlc(index_name, start, end):
-        query = """
-            SELECT "Date", "Open", "High", "Low", "Close", "Vol(in M)"
-            FROM ohlc_index
-            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
-            ORDER BY "Date"
-        """
-        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
-        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
-        return df_ohlc
-
-    df_nifty_filtered = fetch_ohlc(index_choice, start_date, end_date)
-
-    # === Plotting
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.65, 0.35],
-        vertical_spacing=0.07,
-        subplot_titles=["Nifty Candlestick Chart", "Mars–Mercury Speed Degree Difference"]
-    )
-
-    # Candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df_nifty_filtered['Date'],
-        open=df_nifty_filtered['Open'],
-        high=df_nifty_filtered['High'],
-        low=df_nifty_filtered['Low'],
-        close=df_nifty_filtered['Close'],
-        name="Nifty",
-        showlegend=False,
-        increasing=dict(line=dict(color="green", width=1.2), fillcolor="rgba(0,200,0,0.4)"),
-        decreasing=dict(line=dict(color="red", width=1.2), fillcolor="rgba(200,0,0,0.4)")
-    ), row=1, col=1)
-
-    # Transparent scatter (hover only)
-    fig.add_trace(go.Scatter(
-        x=df_nifty_filtered['Date'],
-        y=[None] * len(df_nifty_filtered),
-        mode='markers',
-        marker=dict(opacity=0),
-        hovertemplate="%{x|%b %d, %Y}<extra></extra>",
-        showlegend=False
-    ), row=1, col=1)
-
-    # Speed difference line
-    fig.add_trace(go.Scatter(
-        x=df['Date'],
-        y=df['Degree Diff'],
-        mode='lines',
-        name="Deg. Diff (Mercury–Mars)",
-        line=dict(color="orange", width=2)
-    ), row=2, col=1)
-
-    # 59-min threshold
-    fig.add_hline(
-        y=0.9833,
-        line_color="gray",
-        line_dash="dash",
-        opacity=0.6,
-        row=2, col=1
-    )
-
-    # Signal annotations
-    for _, row_sig in signal_df.iterrows():
-        d = row_sig['Date']
-        color = 'black' if row_sig['Exact Match'] else 'purple'
-        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=1, col=1)
-        fig.add_vline(x=d, line_color=color, line_dash='dot', opacity=0.8, row=2, col=1)
-        fig.add_annotation(
-            x=d,
-            y=df_nifty_filtered['High'].max(),
-            text="🔻",
-            showarrow=False,
-            xanchor="center",
-            yanchor="bottom",
-            font=dict(color=color, size=14),
-            row=1, col=1
-        )
-
-    # Layout
-    fig.update_layout(
-        height=800,
-        hovermode="x unified",
-        xaxis_rangeslider_visible=False,
-        xaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
-        yaxis=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
-        xaxis2=dict(showspikes=True, spikemode='across', spikesnap='cursor', spikedash='dot'),
-        yaxis2=dict(
-            title="° Difference",
-            showspikes=True,
-            spikemode='across',
-            spikesnap='cursor',
-            spikedash='dot'
-        )
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    with st.expander("📋 Full Speed Comparison Table"):
-        st.dataframe(df)
-
 elif filter_mode == "Rule 3: 161° Mars–Mercury Bullish Signal":
     st.header("📈 Mars–Mercury 161°32′18″ Angular Separation (Bullish Signal)")
 
@@ -4590,7 +4421,7 @@ elif filter_mode == "Rule 3: 161° Mars–Mercury Bullish Signal":
     # === User input
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=datetime(2010, 1, 1))
+        start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
     with col2:
         end_date = st.date_input("End Date", value=datetime.today())
 
@@ -4728,7 +4559,7 @@ elif filter_mode == "Rule 3: 161° Mars–Mercury Bullish Signal":
     with st.expander("📋 Full Angular Separation Table"):
         st.dataframe(df)
 
-elif filter_mode == "test Mars–Mercury 59-Min Rule":
+elif filter_mode == "Rule 2: Mars–Mercury 59-Min Rule":
     st.header("📉 Mars–Mercury 59-Minute Speed Differential Rule (Fast – Using Excel)")
 
     import pandas as pd
@@ -5703,63 +5534,188 @@ elif filter_mode == "Rule 27: Mercury's Speed Triggers (59′ and 1°58′)":
     st.plotly_chart(fig, use_container_width=True)
 
 elif filter_mode == "Rule 23: Saturn Latitude Differential":
-    st.header("🪐 Rule 23: Saturn Latitude Differential (Swiss Ephemeris)")
+    st.header("🪐 Rule 23: Saturn Heliocentric Latitude Differential")
 
-    import swisseph as swe
     import pandas as pd
-    import numpy as np
-    from datetime import datetime, timedelta
+    from datetime import datetime
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
-    # === Ephemeris config
-    swe.set_ephe_path("C:/ephe")
-    swe.set_sid_mode(swe.SIDM_KRISHNAMURTI)
-
-    # === Input
+    # === User Inputs ===
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("Start Date", value=datetime(2020, 1, 1))
     with col2:
-        end_date = st.date_input("End Date", value=datetime(2026, 12, 31))
+        end_date = st.date_input("End Date", value=datetime(2025, 12, 31))
 
+    top_base_date = st.date_input("Top Base Date (📉 subtract 0.20)", value=datetime(2024, 9, 27))
+    bottom_base_date = st.date_input("Bottom Base Date (📈 add 0.20)", value=datetime(2020, 1, 3))
+
+    tolerance = st.number_input("Tolerance (arcseconds)", min_value=0.0, max_value=5.0, value=0.01, step=0.01)
     index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
 
-    # Raphael values: 2.39, 2.19, ..., 0.00, ..., 2.39 (mirror)
-    BASE = 2.39
-    STEP = 0.20
-    TOLERANCE = st.number_input(
-    "Set Tolerance (e.g. 0.01 = ±0.01 arcsec)",
-    min_value=0.0,
-    max_value=5.0,
-    value=0.01,
-    step=0.01,
-    format="%.4f"
-)
+    # === Load Saturn Var/Day Excel
+    df = pd.read_excel("saturn_variation.xlsx")
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
 
-    key_levels = [round(BASE - i * STEP, 2) for i in range(13)] + \
-                 [round(i * STEP, 2) for i in range(1, 13)]
+    # === Base values
+    def get_base_motion(date):
+        row = df[df['Date'] == pd.to_datetime(date)]
+        return round(row.iloc[0]['Var. per Day (arcsec)'], 2) if not row.empty else None
 
-    # === Compute heliocentric latitude differential using Swiss Ephemeris
-    dates = pd.date_range(start=start_date - timedelta(days=1), end=end_date, freq='D')
-    results = []
+    base_top = get_base_motion(top_base_date)
+    base_bottom = get_base_motion(bottom_base_date)
+
+    if base_top is None or base_bottom is None:
+        st.error("❌ Base date not found in Saturn variation data.")
+        st.stop()
+
+    st.info(f"Top Base Value: {abs(base_top)} arcsec (📉 subtract, abs)\n\nBottom Base Value: {base_bottom} arcsec (📈 add, signed)")
+
+    # === Generate key levels
+    # TOP (use abs)
+    abs_top_series = df['Var. per Day (arcsec)'].abs()
+    top_levels = [round(abs(base_top) - i * 0.20, 2) for i in range(int(abs(base_top) / 0.20) + 1)]
+
+    # BOTTOM (use signed)
+    max_motion = df['Var. per Day (arcsec)'].max()
+    min_motion = df['Var. per Day (arcsec)'].min()
+    steps_up = int((max_motion - base_bottom) / 0.20) + 1
+    steps_down = int((base_bottom - min_motion) / 0.20) + 1
+
+    bottom_levels = sorted(
+        {round(base_bottom + i * 0.20, 2) for i in range(steps_up)} |
+        {round(base_bottom - i * 0.20, 2) for i in range(1, steps_down)}
+    )
+
+    # === Find matching signals
+    top_signals = df[abs_top_series.apply(lambda x: any(abs(x - lvl) <= tolerance for lvl in top_levels))].copy()
+    bottom_signals = df[df['Var. per Day (arcsec)'].apply(lambda x: any(abs(x - lvl) <= tolerance for lvl in bottom_levels))].copy()
+
+    st.dataframe(df)
+
+    # === Load OHLC from NeonDB
+    @st.cache_data
+    def fetch_ohlc(index_name, start, end):
+        query = """
+            SELECT "Date", "Open", "High", "Low", "Close"
+            FROM ohlc_index
+            WHERE index_name = %s AND "Date" BETWEEN %s AND %s
+            ORDER BY "Date"
+        """
+        df_ohlc = pd.read_sql(query, engine, params=(index_name, start, end))
+        df_ohlc['Date'] = pd.to_datetime(df_ohlc['Date'])
+        return df_ohlc
+
+    df_price = fetch_ohlc(index_choice, pd.to_datetime(start_date), pd.to_datetime(end_date))
+
+    st.success(f"📌 Found {len(top_signals)} top signal(s) and {len(bottom_signals)} bottom signal(s).")
+
+    # === Plot Setup
+    col1, col2 = st.columns(2)
+
+    # === TOP SIGNALS CHART ===
+    with col1:
+        fig_top = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                                vertical_spacing=0.07,
+                                subplot_titles=["Price (Top Signals)", "Saturn Var/Day (Top Levels)"])
+
+        fig_top.add_trace(go.Candlestick(
+            x=df_price['Date'], open=df_price['Open'], high=df_price['High'],
+            low=df_price['Low'], close=df_price['Close'],
+            name="Price", increasing_line_color='green', decreasing_line_color='red'
+        ), row=1, col=1)
+
+        fig_top.add_trace(go.Scatter(
+            x=df['Date'], y=df['Var. per Day (arcsec)'],
+            mode='lines', name="Saturn Motion", line=dict(color='orange')
+        ), row=2, col=1)
+
+        for d in top_signals['Date'].drop_duplicates():
+            for r in [1, 2]:
+                fig_top.add_vline(x=d, line_color='red', line_dash='dot', line_width=1, opacity=0.7, row=r, col=1)
+
+        fig_top.update_layout(height=700, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig_top, use_container_width=True)
+
+    # === BOTTOM SIGNALS CHART ===
+    with col2:
+        fig_bottom = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                                   vertical_spacing=0.07,
+                                   subplot_titles=["Price (Bottom Signals)", "Saturn Var/Day (Bottom Levels)"])
+
+        fig_bottom.add_trace(go.Candlestick(
+            x=df_price['Date'], open=df_price['Open'], high=df_price['High'],
+            low=df_price['Low'], close=df_price['Close'],
+            name="Price", increasing_line_color='green', decreasing_line_color='red'
+        ), row=1, col=1)
+
+        fig_bottom.add_trace(go.Scatter(
+            x=df['Date'], y=df['Var. per Day (arcsec)'],
+            mode='lines', name="Saturn Motion", line=dict(color='orange')
+        ), row=2, col=1)
+
+        for d in bottom_signals['Date'].drop_duplicates():
+            for r in [1, 2]:
+                fig_bottom.add_vline(x=d, line_color='green', line_dash='dot', line_width=1, opacity=0.7, row=r, col=1)
+
+        fig_bottom.update_layout(height=700, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig_bottom, use_container_width=True)
+
+elif filter_mode == "Rule 22: Mercury Retrograde Conjunctions":
+    st.header("☀️ Rule 22: Mercury Retrograde Conjunctions (Market Reversals)")
+
+    import swisseph as swe
+    import pandas as pd
+    from datetime import datetime, timedelta
+    import plotly.graph_objects as go
+
+    # === Setup ===
+    swe.set_ephe_path("C:/ephe")
+    swe.set_sid_mode(swe.SIDM_LAHIRI)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", value=datetime(2000, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=datetime(2025, 12, 31))
+
+    index_choice = st.selectbox("Select Index", ["Nifty", "BankNifty"], index=0)
+    tolerance_deg = 1.0  # degrees (Sun-Mercury conjunction)
+
+    # === Scan daily to detect Mercury Retrograde Conjunctions with Sun
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    conjunctions = []
 
     for date in dates:
         jd = swe.julday(date.year, date.month, date.day)
 
-        # heliocentric position
-        result, _ = swe.calc_ut(jd, swe.SATURN, swe.FLG_SWIEPH | swe.FLG_HELCTR)
-        lat_deg = result[1]  # heliocentric latitude in degrees
+        # Get geocentric longitudes & speed
+        merc = swe.calc_ut(jd, swe.MERCURY)[0]
+        sun = swe.calc_ut(jd, swe.SUN)[0]
 
-        results.append({
-            "Date": date,
-            "Latitude": lat_deg
-        })
+        mercury_lon = merc[0]
+        sun_lon = sun[0]
+        mercury_speed = merc[3]
 
-    df = pd.DataFrame(results)
-    df['Motion'] = df['Latitude'].diff().abs() * 3600  # arcseconds
-    df['Signal'] = df['Motion'].apply(lambda x: any(abs(x - k) <= TOLERANCE for k in key_levels))
-    signal_df = df[df['Signal'] == True]
+        # Normalize angle difference
+        angle_diff = abs((mercury_lon - sun_lon + 180) % 360 - 180)
+
+        # Mercury must be retrograde & near conjunction with Sun
+        if mercury_speed < 0 and angle_diff <= tolerance_deg:
+            conjunctions.append({
+                "Date": date,
+                "Sun°": round(sun_lon, 2),
+                "Mercury°": round(mercury_lon, 2),
+                "Angle Diff": round(angle_diff, 2),
+                "Mercury Speed": round(mercury_speed, 3)
+            })
+
+    df_conj = pd.DataFrame(conjunctions)
+
+    st.success(f"📌 Found {len(df_conj)} retrograde conjunction(s) of Mercury with the Sun.")
+    st.dataframe(df_conj)
 
     # === Load OHLC from NeonDB
     @st.cache_data
@@ -5776,62 +5732,8 @@ elif filter_mode == "Rule 23: Saturn Latitude Differential":
 
     df_price = fetch_ohlc(index_choice, start_date, end_date)
 
-    # === Backtest duration
-    def detect_trend_duration(df_price, signal_date, threshold=0.5, max_days=20):
-        df_price = df_price.set_index('Date').sort_index()
-        if signal_date not in df_price.index:
-            future = df_price[df_price.index > signal_date]
-            if future.empty:
-                return 0, "No Data"
-            signal_date = future.index[0]
-
-        P0 = df_price.loc[signal_date]['Close']
-        days = 0
-        direction = None
-
-        for i in range(1, max_days + 1):
-            future_date = signal_date + timedelta(days=i)
-            if future_date not in df_price.index:
-                continue
-            Pn = df_price.loc[future_date]['Close']
-            change = ((Pn - P0) / P0) * 100
-
-            if direction is None:
-                if change > threshold:
-                    direction = "Up 📈"
-                elif change < -threshold:
-                    direction = "Down 📉"
-                else:
-                    continue
-            elif direction == "Up 📈" and change < -threshold:
-                break
-            elif direction == "Down 📉" and change > threshold:
-                break
-
-            days += 1
-
-        return days, direction or "Neutral ➖"
-
-    # Apply duration check
-    durations = []
-    for _, row in signal_df.iterrows():
-        duration, trend = detect_trend_duration(df_price.copy(), row['Date'])
-        durations.append((duration, trend))
-
-    signal_df['Trend Duration (days)'] = [d[0] for d in durations]
-    signal_df['Trend Direction'] = [d[1] for d in durations]
-
-    st.success(f"📌 Found {len(signal_df)} Saturn signal(s).")
-    st.dataframe(signal_df[['Date', 'Motion', 'Trend Direction', 'Trend Duration (days)']])
-
-    # === Plotting
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.65, 0.35],
-        vertical_spacing=0.07,
-        subplot_titles=["Market Chart", "Saturn Heliocentric Latitude Motion (arcsec/day)"]
-    )
+    # === Plot chart
+    fig = go.Figure()
 
     fig.add_trace(go.Candlestick(
         x=df_price['Date'],
@@ -5840,39 +5742,28 @@ elif filter_mode == "Rule 23: Saturn Latitude Differential":
         low=df_price['Low'],
         close=df_price['Close'],
         name="Price",
-        increasing=dict(line=dict(color="green")),
-        decreasing=dict(line=dict(color="red"))
-    ), row=1, col=1)
+        increasing_line_color="green",
+        decreasing_line_color="red"
+    ))
 
-    fig.add_trace(go.Scatter(
-        x=df['Date'],
-        y=df['Motion'],
-        mode='lines',
-        name="Saturn Δ Latitude (arcsec)",
-        line=dict(color='orange')
-    ), row=2, col=1)
-
-    for _, row in signal_df.iterrows():
-        fig.add_vline(x=row['Date'], line_color='purple', line_dash='dot', opacity=0.6, row=1, col=1)
-        fig.add_vline(x=row['Date'], line_color='purple', line_dash='dot', opacity=0.6, row=2, col=1)
+    for _, row in df_conj.iterrows():
+        fig.add_vline(x=row['Date'], line_color='gold', line_dash='dot', opacity=0.7)
         fig.add_annotation(
             x=row['Date'],
             y=df_price['High'].max(),
-            text=f"{row['Trend Direction']} ({row['Trend Duration (days)']}d)",
+            text="☀️☿ Conj.",
             showarrow=False,
-            yanchor="bottom",
-            font=dict(size=12, color="purple"),
-            row=1, col=1
+            font=dict(size=11, color="gold"),
+            yanchor="bottom"
         )
 
     fig.update_layout(
-        height=800,
-        hovermode="x unified",
+        height=700,
+        title="Price Chart with Mercury Retrograde Conjunctions",
         xaxis_rangeslider_visible=False,
+        hovermode="x unified",
         xaxis=dict(showspikes=True),
-        xaxis2=dict(showspikes=True),
-        yaxis=dict(showspikes=True),
-        yaxis2=dict(title="Arcseconds/day", showspikes=True)
+        yaxis=dict(showspikes=True)
     )
 
     st.plotly_chart(fig, use_container_width=True)
