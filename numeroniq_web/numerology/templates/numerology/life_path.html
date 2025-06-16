@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h1>Life Path</h1>
+<form method="post">
+  {% csrf_token %}
+  <input type="number" name="number">
+  <button type="submit">Calculate</button>
+</form>
+{% if result %}<p>Your life path: {{ result }}</p>{% endif %}
+</body>
+</html>

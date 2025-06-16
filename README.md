@@ -1,32 +1,15 @@
-# 🎈 Blank app template
+# Numeroniq Web
 
-A simple Streamlit app template for you to modify!
+This project now contains a basic Django setup alongside the original Streamlit app. The Django project provides a login page and a simple numerology example.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## Running
 
-### How to run it on your own machine
-
-1. Install the requirements
-
+1. Install dependencies
    ```
-   $ pip install -r requirements.txt
+   pip install -r requirements.txt
    ```
-
-2. Run the app
-
+2. Apply migrations and run the server
    ```
-   $ streamlit run streamlit_app.py
+   python numeroniq_web/manage.py migrate
+   python numeroniq_web/manage.py runserver
    ```
-
-### Configuring Credentials
-
-The app expects user credentials as a mapping of usernames to **SHA-256 hashed**
-passwords. Provide them either via the environment variable `NUMERONIQ_CREDENTIALS`
-or in a `credentials.json` file in the project root (ignored by Git). Example:
-
-```json
-{
-  "admin": "<hashed-password>",
-  "user": "<hashed-password>"
-}
-```
